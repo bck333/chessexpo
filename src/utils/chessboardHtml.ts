@@ -90,7 +90,18 @@ export const getChessboardHtml = (
         transform: translate(-50%, -50%);
         pointer-events: none;
         display: ${!isSetup && gameOptions.showLegalMoves ? 'block' : 'none'};
-        border: 2px solid rgba(255, 255, 255, 0.2);
+    }
+    .capture-ring {
+        height: 85%;
+        width: 85%;
+        border: 4px solid rgba(0, 0, 0, 0.12);
+        border-radius: 50%;
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        pointer-events: none;
+        display: ${!isSetup && gameOptions.showLegalMoves ? 'block' : 'none'};
     }
     
     /* Coordinates */
@@ -121,11 +132,19 @@ export const getChessboardHtml = (
     var currentPiece = null;
     var position = {};
 
-    function removeGreyDots () { $('#board .dot').remove(); }
+    function removeGreyDots () { 
+        $('#board .dot').remove(); 
+        $('#board .capture-ring').remove(); 
+    }
     function greyDot (square) {
       if (!${!isSetup && gameOptions.showLegalMoves}) return;
       var $square = $('#board .square-' + square);
-      if ($square.find('.dot').length === 0) $square.append('<div class="dot"></div>');
+      var piece = game.get(square);
+      if (piece) {
+        if ($square.find('.capture-ring').length === 0) $square.append('<div class="capture-ring"></div>');
+      } else {
+        if ($square.find('.dot').length === 0) $square.append('<div class="dot"></div>');
+      }
     }
     function removeHighlights () { 
         $board.find('.square-55d63').removeClass('highlight-select'); 

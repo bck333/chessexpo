@@ -69,7 +69,9 @@ export default function PlayComputerScreen() {
     // Game state
     const [fen, setFen] = useState('start');
     const [turn, setTurn] = useState<'w' | 'b'>('w');
-    const [history, setHistory] = useState<string[]>([]);
+    const [history, setHistory] = useState<string[]>(['start']); // Store FENs
+    const [moveNames, setMoveNames] = useState<string[]>([]); // Store SANs
+    const [currentMoveIndex, setCurrentMoveIndex] = useState(0);
     const [isThinking, setIsThinking] = useState(false);
     const [boardReady, setBoardReady] = useState(false);
     const [gameOverReason, setGameOverReason] = useState<string | null>(null);
@@ -101,7 +103,9 @@ export default function PlayComputerScreen() {
         setBoardReady(false); // Reset on new game
         setFen(initialFen);
         setTurn(initialFen.includes(' b ') ? 'b' : 'w');
-        setHistory([]);
+        setHistory([initialFen]);
+        setMoveNames([]);
+        setCurrentMoveIndex(0);
         setGameOverReason(null);
         if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     };
@@ -132,9 +136,18 @@ export default function PlayComputerScreen() {
                     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                 }
 
+                // Update history and index
+                const newHistory = history.slice(0, currentMoveIndex + 1);
+                newHistory.push(data.fen);
+                setHistory(newHistory);
+                
+                const newMoveNames = moveNames.slice(0, currentMoveIndex);
+                newMoveNames.push(data.san);
+                setMoveNames(newMoveNames);
+                
+                setCurrentMoveIndex(newHistory.length - 1);
                 setFen(data.fen);
                 setTurn(data.turn);
-                setHistory(prev => [...prev, data.san]);
 
                 if (data.isGameOver) {
                     setGameState('gameover');
@@ -148,13 +161,15 @@ export default function PlayComputerScreen() {
     };
 
     useEffect(() => {
-        if (gameState === 'playing' && turn !== actualUserColor && !isThinking && !gameOverReason && boardReady) {
+        if (gameState === 'playing' && turn !== actualUserColor && !isThinking && !gameOverReason && boardReady && currentMoveIndex === history.length - 1) {
+            // Natural thinking delay
+            const delay = Math.floor(Math.random() * 500) + 300; 
             const timer = setTimeout(() => {
                 makeComputerMove();
-            }, 500);
+            }, delay);
             return () => clearTimeout(timer);
         }
-    }, [turn, actualUserColor, gameState, gameOverReason, boardReady]);
+    }, [turn, actualUserColor, gameState, gameOverReason, boardReady, currentMoveIndex, history.length]);
 
     useEffect(() => {
         loadSounds();
@@ -215,6 +230,14 @@ export default function PlayComputerScreen() {
             console.error('Computer move failed:', error);
         } finally {
             setIsThinking(false);
+        }
+    };
+
+    const navigateMove = (index: number) => {
+        if (index >= 0 && index < history.length) {
+            setCurrentMoveIndex(index);
+            setFen(history[index]);
+            if (Platform.OS !== 'web') Haptics.selectionAsync();
         }
     };
 
@@ -405,19 +428,61 @@ export default function PlayComputerScreen() {
             </View>
 
             <View style={styles.footer}>
-                <ScrollView horizontal style={styles.historyList} contentContainerStyle={{ alignItems: 'center' }}>
-                    {history.map((move, i) => (
-                        <View key={i} style={[styles.historyItem, { backgroundColor: colors.surface }]}>
-                             <Text style={[styles.historyMoveNum, { color: colors.textMuted }]}>{i % 2 === 0 ? `${Math.floor(i/2) + 1}.` : ''}</Text>
-                             <Text style={[styles.historyMove, { color: colors.text }]}>{move}</Text>
+                <View style={styles.navigationRow}>
+                    <TouchableOpacity 
+                        style={[styles.navBtn, { backgroundColor: colors.surface }]} 
+                        onPress={() => navigateMove(currentMoveIndex - 1)}
+                        disabled={currentMoveIndex <= 0}
+                    >
+                        <ChevronLeft color={currentMoveIndex > 0 ? colors.primary : colors.textMuted} size={28} />
+                    </TouchableOpacity>
+                    
+                    <View style={styles.moveIndicator}>
+                        <Text style={[styles.moveIndicatorText, { color: colors.text }]}>
+                            Move {Math.floor(currentMoveIndex / 2) + 1}
+                        </Text>
+                        <Text style={[styles.turnIndicator, { color: colors.accent }]}>
+                            {currentMoveIndex % 2 === 0 ? "White's Turn" : "Black's Turn"}
+                        </Text>
+                    </View>
+
+                    <TouchableOpacity 
+                        style={[styles.navBtn, { backgroundColor: colors.surface }]} 
+                        onPress={() => navigateMove(currentMoveIndex + 1)}
+                        disabled={currentMoveIndex >= history.length - 1}
+                    >
+                        <View style={{ transform: [{ rotate: '180deg' }] }}>
+                            <ChevronLeft color={currentMoveIndex < history.length - 1 ? colors.primary : colors.textMuted} size={28} />
                         </View>
+                    </TouchableOpacity>
+                </View>
+
+                <ScrollView horizontal style={styles.historyList} contentContainerStyle={{ alignItems: 'center' }}>
+                    {moveNames.map((move, i) => (
+                        <TouchableOpacity 
+                            key={i} 
+                            style={[
+                                styles.historyItem, 
+                                { backgroundColor: colors.surface },
+                                currentMoveIndex === i + 1 && { borderColor: colors.primary, borderWidth: 1 }
+                            ]}
+                            onPress={() => navigateMove(i + 1)}
+                        >
+                             <Text style={[styles.historyMoveNum, { color: colors.textMuted }]}>
+                                {i % 2 === 0 ? `${Math.floor(i/2) + 1}.` : ''}
+                             </Text>
+                             <Text style={[styles.historyMove, { color: colors.text }]}>{move}</Text>
+                        </TouchableOpacity>
                     ))}
                 </ScrollView>
 
                 <View style={styles.controls}>
-                    <TouchableOpacity style={[styles.controlBtn, { backgroundColor: colors.surfaceLight }]} onPress={resetGame}>
+                    <TouchableOpacity style={[styles.hintBtn, { backgroundColor: colors.surfaceLight }]} onPress={() => {/* Hint logic */}}>
+                        <Swords size={20} color={colors.accent} />
+                        <Text style={[styles.controlBtnText, { color: colors.white }]}>Hint</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={[styles.quitBtn, { backgroundColor: colors.surfaceLight }]} onPress={resetGame}>
                         <RotateCcw size={20} color={colors.white} />
-                        <Text style={[styles.controlBtnText, { color: colors.white }]}>Quit Game</Text>
                     </TouchableOpacity>
                 </View>
             </View>
@@ -697,16 +762,52 @@ const styles = StyleSheet.create({
         fontSize: 10,
         fontWeight: '700',
     },
+    navigationRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingHorizontal: 30,
+        marginBottom: 20,
+    },
+    navBtn: {
+        width: 50,
+        height: 50,
+        borderRadius: 25,
+        justifyContent: 'center',
+        alignItems: 'center',
+        elevation: 2,
+    },
+    moveIndicator: {
+        alignItems: 'center',
+    },
+    moveIndicatorText: {
+        fontSize: 16,
+        fontWeight: '900',
+    },
+    turnIndicator: {
+        fontSize: 10,
+        fontWeight: '700',
+        marginTop: 2,
+    },
     controls: {
+        flexDirection: 'row',
         paddingHorizontal: 20,
         marginTop: 20,
+        gap: 12,
     },
-    controlBtn: {
+    hintBtn: {
+        flex: 1,
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'center',
         gap: 8,
         paddingVertical: 16,
+        borderRadius: THEME.borderRadius.lg,
+    },
+    quitBtn: {
+        width: 60,
+        alignItems: 'center',
+        justifyContent: 'center',
         borderRadius: THEME.borderRadius.lg,
     },
     controlBtnText: {

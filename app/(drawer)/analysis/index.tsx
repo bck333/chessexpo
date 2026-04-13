@@ -51,8 +51,16 @@ export default function AnalysisScreen() {
     const [engineEval, setEngineEval] = useState('0.00');
     const [engineDepth, setEngineDepth] = useState(0);
     const [isThinking, setIsThinking] = useState(false);
+    
+    // Navigation & History
     const [history, setHistory] = useState<MoveRecord[]>([]);
+    const [fenHistory, setFenHistory] = useState<string[]>(['start']);
+    const [currentMoveIndex, setCurrentMoveIndex] = useState(0);
+    const [fen, setFen] = useState('start');
+    
     const [continuation, setContinuation] = useState<string[]>([]);
+    const [multiPVLines, setMultiPVLines] = useState<any[]>([]);
+    const [accuracy, setAccuracy] = useState<number | null>(null);
     const [lastWhiteEval, setLastWhiteEval] = useState(0.3);
     const [boardReady, setBoardReady] = useState(false);
     const lastSyncedFen = useRef<string>('');
@@ -85,18 +93,17 @@ export default function AnalysisScreen() {
             const data = JSON.parse(event.nativeEvent.data);
             if (data.type === 'move') {
                 // Determine sound and feedback
-                if (data.san.includes('+') || data.san.includes('#')) {
-                    playSound('check');
-                    if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-                } else if (data.san.includes('x')) {
-                    playSound('capture');
-                    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                } else {
-                    playSound('move');
-                    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                }
+                playSound(data.san.includes('x') ? 'capture' : 'move');
+                if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
-                lastSyncedFen.current = data.fen; // Mark as synced since it came from board
+                // Update history and index for navigation
+                const newFenHistory = fenHistory.slice(0, currentMoveIndex + 1);
+                newFenHistory.push(data.fen);
+                setFenHistory(newFenHistory);
+                setCurrentMoveIndex(newFenHistory.length - 1);
+                setFen(data.fen);
+
+                lastSyncedFen.current = data.fen; 
                 await fetchBackendEval(data.fen, data.san, data.turn, false);
             } else if (data.type === 'ready') {
                 setBoardReady(true);
@@ -128,15 +135,26 @@ export default function AnalysisScreen() {
         }
     };
 
-    const calculateQuality = (evalBeforeMove: number, rawEvalAfterMove: number, turn: 'w' | 'b', moveCount: number) => {
-        const evalAfterMove = turn === 'w' ? -rawEvalAfterMove : rawEvalAfterMove;
-        const cpLoss = turn === 'w' ? (evalBeforeMove - evalAfterMove) : (evalAfterMove - evalBeforeMove);
-        if (moveCount < 8 && Math.abs(rawEvalAfterMove) < 0.8) return 'good';
-        if (cpLoss < -0.3) return 'best';
-        if (cpLoss < 0.1) return 'good';
-        if (cpLoss < 0.5) return 'inaccuracy';
-        if (cpLoss < 1.5) return 'mistake';
-        return 'blunder';
+    const calculateAccuracy = (history: MoveRecord[]) => {
+        if (history.length === 0) return 100;
+        let totalCPL = 0;
+        history.forEach(m => {
+            const val = parseFloat(m.eval);
+            if (!isNaN(val)) totalCPL += Math.abs(val);
+        });
+        const avgCPL = totalCPL / history.length;
+        return Math.max(0, Math.min(100, 103.1668 * Math.exp(-0.043876 * (avgCPL * 10))));
+    };
+
+    const getEvalSummary = (val: number, isMate: boolean) => {
+        if (isMate) return val > 0 ? "White has forced mate" : "Black has forced mate";
+        if (val > 2.5) return "White is winning";
+        if (val > 1.0) return "White is better";
+        if (val > 0.4) return "White has slight advantage";
+        if (val < -2.5) return "Black is winning";
+        if (val < -1.0) return "Black is better";
+        if (val < -0.4) return "Black has slight advantage";
+        return "Position is equal";
     };
 
     const fetchBackendEval = async (fen: string, san: string, turn: 'w' | 'b', isInitial: boolean) => {
@@ -148,29 +166,22 @@ export default function AnalysisScreen() {
             let evalText = result.is_mate ? `M${result.mate_in}` : (rawEval > 0 ? `+${rawEval.toFixed(2)}` : rawEval.toFixed(2));
             setEngineEval(evalText);
             setEngineDepth(result.depth);
+            setMultiPVLines(result.lines || []);
             
-            // Convert UCI continuation to SAN
             if (result.continuation && result.continuation.length > 0) {
-                const sanMoves = formatMovesToSAN(fen, result.continuation);
-                setContinuation(sanMoves);
-            } else {
-                setContinuation([]);
+                setContinuation(formatMovesToSAN(fen, result.continuation));
             }
 
-            // Calculate eval from White's perspective for the visual bar
-            // result.evaluation is relative to side-to-move. 
-            // If it is black's turn and white is better, eval will be negative.
             const evalForWhite = turn === 'w' ? rawEval : -rawEval;
-            let percentage = 50 + (evalForWhite * 5); // 1.0 cp = +5%
-            if (percentage > 97) percentage = 97;
-            if (percentage < 3) percentage = 3;
-            evalPercentage.value = percentage;
+            let percentage = 50 + (evalForWhite * 5);
+            evalPercentage.value = Math.max(5, Math.min(95, percentage));
 
             if (san && !isInitial) {
-                const quality = calculateQuality(lastWhiteEval, rawEval, turn, history.length);
-                setHistory(prev => [...prev, { san, eval: evalText, quality: quality as any, color: turn }]);
+                const newMove: MoveRecord = { san, eval: evalText, color: turn };
+                const newHistory = [...history, newMove];
+                setHistory(newHistory);
+                setAccuracy(calculateAccuracy(newHistory));
             }
-            setLastWhiteEval(turn === 'w' ? -rawEval : rawEval);
         } catch (error) {
             console.error('Analysis failed:', error);
         } finally {
@@ -178,15 +189,23 @@ export default function AnalysisScreen() {
         }
     };
 
+    const navigateMove = (index: number) => {
+        if (index >= 0 && index < fenHistory.length) {
+            setCurrentMoveIndex(index);
+            setFen(fenHistory[index]);
+            if (Platform.OS !== 'web') Haptics.selectionAsync();
+        }
+    };
+
     const resetBoard = () => {
-        webviewRef.current?.injectJavaScript(`window.postMessage(JSON.stringify({type: 'reset'}), '*'); true;`);
-        setEngineEval('0.00');
-        setEngineDepth(0);
+        setFen('start');
+        setFenHistory(['start']);
+        setCurrentMoveIndex(0);
         setHistory([]);
-        setContinuation([]);
-        setLastWhiteEval(0.3);
+        setAccuracy(null);
+        setEngineEval('0.00');
         evalPercentage.value = 50;
-        setTimeout(() => fetchBackendEval('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1', '', 'w', true), 300);
+        setTimeout(() => fetchBackendEval('start', '', 'w', true), 300);
     };
 
     const renderQualityIcon = (quality?: string) => {
@@ -203,10 +222,10 @@ export default function AnalysisScreen() {
     const boardHtml = React.useMemo(() => {
         return getChessboardHtml({
             orientation: 'white',
-            fen: 'start',
+            fen: fen,
             draggable: true
         }, colors, boardTheme, pieceSet, gameOptions);
-    }, [boardTheme, pieceSet, gameOptions]);
+    }, [colors, boardTheme, pieceSet, gameOptions, fen]);
 
     return (
         <View style={[styles.container, { backgroundColor: colors.background }]}>
@@ -223,26 +242,37 @@ export default function AnalysisScreen() {
 
             {/* Engine Overview */}
             <Animated.View entering={FadeIn} style={[styles.enginePanel, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                <View style={[styles.evalBadge, { backgroundColor: colors.primary + '20' }]}>
-                    <Text style={[styles.evalBadgeText, { color: colors.primaryLight }]}>{engineEval}</Text>
-                    {engineDepth > 0 && (
-                        <Text style={[styles.depthLabel, { color: colors.primaryLight }]}>D{engineDepth}</Text>
+                <View style={styles.engineHeader}>
+                    <View style={[styles.evalBadge, { backgroundColor: colors.primary + '20' }]}>
+                        <Text style={[styles.evalBadgeText, { color: colors.primaryLight }]}>{engineEval}</Text>
+                    </View>
+                    <View style={styles.summaryContainer}>
+                        <Text style={[styles.summaryText, { color: colors.text }]}>
+                            {getEvalSummary(parseFloat(engineEval) || 0, engineEval.includes('M'))}
+                        </Text>
+                        <Text style={[styles.betterMoveText, { color: colors.accent }]}>
+                            {continuation.length > 0 ? `Best move: ${continuation[0]}` : 'Calculating...'}
+                        </Text>
+                    </View>
+                    {accuracy !== null && (
+                        <View style={[styles.accuracyBadge, { backgroundColor: colors.accent + '20' }]}>
+                            <Text style={[styles.accuracyValue, { color: colors.accent }]}>{Math.round(accuracy)}%</Text>
+                            <Text style={[styles.accuracyLabel, { color: colors.accent }]}>ACC</Text>
+                        </View>
                     )}
                 </View>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.suggestScroll}>
-                    <TrendingUp size={16} color={colors.primary} style={styles.suggestIcon} />
-                    {isThinking && <ActivityIndicator size="small" color={colors.primary} style={{ marginRight: 8 }} />}
-                    {continuation.length > 0 ? (
-                        continuation.map((m, i) => (
-                            <Text key={i} style={[styles.suggestMove, { color: colors.text }]}>{i === 0 ? '' : '→ '} {m}</Text>
-                        ))
-                    ) : (
-                        <Text style={[styles.suggestPlaceholder, { color: colors.textMuted }]}>{isThinking ? 'Calculating...' : 'Ready'}</Text>
-                    )}
-                </ScrollView>
-                <TouchableOpacity style={styles.shareBtn}>
-                    <Share2 size={20} color={colors.textMuted} />
-                </TouchableOpacity>
+
+                <View style={styles.multiPVContainer}>
+                    {multiPVLines.slice(0, 3).map((line, idx) => (
+                        <View key={idx} style={styles.pvLine}>
+                            <Text style={[styles.pvRank, { color: colors.textMuted }]}>{idx + 1}</Text>
+                            <Text style={[styles.pvMove, { color: colors.text }]}>{line.move}</Text>
+                            <Text style={[styles.pvEval, { color: colors.accent }]}>
+                                {line.mate_in !== 0 ? `M${Math.abs(line.mate_in)}` : (line.evaluation > 0 ? `+${line.evaluation.toFixed(1)}` : line.evaluation.toFixed(1))}
+                            </Text>
+                        </View>
+                    ))}
+                </View>
             </Animated.View>
 
             {/* Board Section */}
@@ -268,27 +298,30 @@ export default function AnalysisScreen() {
 
             {/* Move History */}
             <View style={[styles.notationArea, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                <View style={[styles.notationHeader, { borderBottomColor: colors.border }]}>
-                    <Text style={[styles.notationTitle, { color: colors.text }]}>Notation</Text>
-                    <Text style={[styles.moveCount, { color: colors.textMuted }]}>{history.length} moves</Text>
+                <View style={styles.navigationControls}>
+                    <TouchableOpacity style={styles.navBtn} onPress={() => navigateMove(currentMoveIndex - 1)}>
+                        <ChevronLeft color={colors.primary} size={24} />
+                    </TouchableOpacity>
+                    <Text style={[styles.navText, { color: colors.text }]}>Move {Math.floor(currentMoveIndex / 2) + 1}</Text>
+                    <TouchableOpacity style={[styles.navBtn, { transform: [{ rotate: '180deg' }] }]} onPress={() => navigateMove(currentMoveIndex + 1)}>
+                        <ChevronLeft color={colors.primary} size={24} />
+                    </TouchableOpacity>
                 </View>
+
                 <ScrollView style={styles.historyScroll} contentContainerStyle={styles.historyContent}>
                     <View style={styles.movesGrid}>
                         {history.map((record, index) => (
-                            <View key={index} style={styles.moveRow}>
+                            <TouchableOpacity key={index} style={styles.moveRow} onPress={() => navigateMove(index + 1)}>
                                 <Text style={[styles.moveNum, { color: colors.textMuted }]}>{index % 2 === 0 ? `${Math.floor(index/2) + 1}.` : ''}</Text>
                                 <View style={[
                                     styles.moveItem, 
                                     { backgroundColor: colors.background },
-                                    record.quality === 'blunder' && { backgroundColor: colors.error + '15' },
-                                    record.quality === 'mistake' && { backgroundColor: '#f9731615' },
-                                    record.quality === 'best' && { backgroundColor: colors.primary + '15' }
+                                    currentMoveIndex === index + 1 && { borderColor: colors.primary, borderWidth: 1 }
                                 ]}>
                                     <Text style={[styles.moveSan, { color: colors.text }]}>{record.san}</Text>
-                                    {renderQualityIcon(record.quality)}
                                     <Text style={[styles.moveEval, { color: colors.textMuted }]}>{record.eval}</Text>
                                 </View>
-                            </View>
+                            </TouchableOpacity>
                         ))}
                     </View>
                 </ScrollView>
@@ -310,47 +343,73 @@ const styles = StyleSheet.create({
     },
     enginePanel: {
         marginHorizontal: 16,
-        padding: 12,
-        borderRadius: THEME.borderRadius.md,
-        flexDirection: 'row',
-        alignItems: 'center',
+        padding: 16,
+        borderRadius: THEME.borderRadius.lg,
         marginTop: 4,
         borderWidth: 1,
     },
-    evalBadge: {
-        paddingHorizontal: 12,
-        paddingVertical: 6,
-        borderRadius: 8,
-        marginRight: 12,
+    engineHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginBottom: 16,
     },
-    evalBadgeText: {
-        fontWeight: '900',
-        fontSize: 15,
-        fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    },
-    depthLabel: {
-        fontSize: 10,
-        fontWeight: '700',
-        opacity: 0.8,
-        marginTop: -2,
-    },
-    suggestScroll: {
+    summaryContainer: {
         flex: 1,
+        marginHorizontal: 12,
     },
-    suggestIcon: {
-        marginRight: 8,
+    summaryText: {
+        fontSize: 14,
+        fontWeight: '800',
+    },
+    betterMoveText: {
+        fontSize: 12,
+        fontWeight: '700',
         marginTop: 2,
     },
-    suggestMove: {
-        fontSize: 13,
-        fontWeight: '700',
-        marginRight: 8,
+    accuracyBadge: {
+        alignItems: 'center',
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 10,
     },
-    suggestPlaceholder: {
-        fontSize: 13,
+    accuracyValue: {
+        fontSize: 16,
+        fontWeight: '900',
     },
-    shareBtn: {
-        marginLeft: 10,
+    accuracyLabel: {
+        fontSize: 8,
+        fontWeight: '900',
+    },
+    multiPVContainer: {
+        borderTopWidth: 1,
+        borderTopColor: 'rgba(255,255,255,0.05)',
+        paddingTop: 12,
+        gap: 8,
+    },
+    pvLine: {
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    pvRank: {
+        fontSize: 10,
+        fontWeight: '900',
+        width: 15,
+    },
+    pvMove: {
+        fontSize: 12,
+        fontWeight: '800',
+        flex: 1,
+    },
+    pvEval: {
+        fontSize: 12,
+        fontWeight: '900',
+    },
+    evalBadge: {
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        borderRadius: 10,
+        minWidth: 60,
+        alignItems: 'center',
     },
     boardWrapper: {
         flexDirection: 'row',
@@ -400,22 +459,23 @@ const styles = StyleSheet.create({
         borderWidth: 1,
         overflow: 'hidden',
     },
-    notationHeader: {
-        padding: 16,
+    navigationControls: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
+        padding: 12,
         borderBottomWidth: 1,
+        borderBottomColor: 'rgba(255,255,255,0.05)',
     },
-    notationTitle: {
+    navBtn: {
+        width: 40,
+        height: 40,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    navText: {
         fontSize: 14,
         fontWeight: '900',
-        textTransform: 'uppercase',
-        letterSpacing: 1,
-    },
-    moveCount: {
-        fontSize: 12,
-        fontWeight: '700',
     },
     historyScroll: {
         flex: 1,
