@@ -40,3 +40,19 @@ export const toSAN = (fen: string, uci: string): string => {
         return uci;
     }
 };
+
+/**
+ * Injects a message to a WebView using the robust handleReactNativeMessage callback
+ */
+export const injectWebViewMessage = (webviewRef: any, data: any) => {
+    if (!webviewRef || !webviewRef.current) return;
+    const jsonStr = JSON.stringify(data);
+    webviewRef.current.injectJavaScript(`
+        if (window.handleReactNativeMessage) {
+            window.handleReactNativeMessage(${jsonStr});
+        } else {
+            window.postMessage(JSON.stringify(${jsonStr}), '*');
+        }
+        true;
+    `);
+};

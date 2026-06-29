@@ -1,5 +1,6 @@
 import { BoardTheme, PieceSet, GameOptions } from '../context/ThemeContext';
 import { ColorThemeType } from '../constants/theme';
+import { JQUERY_JS, CHESSBOARD_JS, CHESSBOARD_CSS, CHESS_JS } from './chessboardLibraries';
 
 interface BoardConfig {
     orientation: 'white' | 'black';
@@ -21,9 +22,14 @@ const BOARD_THEMES: Record<BoardTheme, { light: string; dark: string }> = {
 
 const PIECE_SETS: Record<PieceSet, string> = {
     wikipedia: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png',
-    alpha: 'https://raw.githubusercontent.com/lichess-org/lila/master/public/piece/alpha/{piece}.png',
-    neo: 'https://raw.githubusercontent.com/lichess-org/lila/master/public/piece/neo/{piece}.png',
-    cburnett: 'https://raw.githubusercontent.com/lichess-org/lila/master/public/piece/cburnett/{piece}.png',
+    /* Commented out for now
+    alpha: 'https://lichess1.org/assets/piece/alpha/{piece}.svg',
+    neo: 'https://lichess1.org/assets/piece/neo/{piece}.svg',
+    cburnett: 'https://lichess1.org/assets/piece/cburnett/{piece}.svg',
+    */
+    alpha: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png',
+    neo: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png',
+    cburnett: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png',
 };
 
 export const getChessboardHtml = (
@@ -42,11 +48,40 @@ export const getChessboardHtml = (
 <html>
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-  <link rel="stylesheet" href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
-  <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+  <meta charset="utf-8" />
+  <script>
+    // Console bridge - forward all console output to React Native
+    (function() {
+      var origLog = console.log;
+      var origError = console.error;
+      var origWarn = console.warn;
+      function send(level, args) {
+        try {
+          if (window.ReactNativeWebView) {
+            window.ReactNativeWebView.postMessage(JSON.stringify({
+              type: 'console',
+              level: level,
+              message: Array.prototype.slice.call(args).map(function(a) {
+                return typeof a === 'object' ? JSON.stringify(a) : String(a);
+              }).join(' ')
+            }));
+          }
+        } catch(e) {}
+      }
+      console.log = function() { send('log', arguments); origLog.apply(console, arguments); };
+      console.error = function() { send('error', arguments); origError.apply(console, arguments); };
+      console.warn = function() { send('warn', arguments); origWarn.apply(console, arguments); };
+      window.onerror = function(msg, url, line, col, err) {
+        send('error', ['WINDOW_ERROR: ' + msg + ' at line ' + line]);
+      };
+    })();
+  </script>
+  <style>${CHESSBOARD_CSS}</style>
+  <script>${JQUERY_JS}</script>
+  <script>${CHESSBOARD_JS}</script>
+  <script>${CHESS_JS}</script>
   <style>
+    * { touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; }
     body { 
         margin: 0; 
         padding: 0; 
@@ -57,13 +92,16 @@ export const getChessboardHtml = (
         justify-content: center;
         align-items: center;
         height: 100vh;
+        touch-action: none;
+        -webkit-overflow-scrolling: auto;
+    }
+    #boardContainer {
+        width: 100vw;
+        touch-action: none;
     }
     #board { 
-        width: 100vw; 
-        height: 100vw; 
-        max-width: 100vh; 
-        max-height: 100vh; 
-        touch-action: none; /* Prevents scrolling while dragging */
+        width: 100%; 
+        touch-action: none; 
         -webkit-user-select: none;
         -webkit-touch-callout: none;
     }
@@ -72,10 +110,17 @@ export const getChessboardHtml = (
     .white-1e1d7 { background-color: ${theme.light} !important; }
     .black-3c85d { background-color: ${theme.dark} !important; }
     
+    /* Better Piece Rendering */
+    .square-55d63 .piece-417db {
+        width: 100% !important;
+        height: 100% !important;
+    }
+    
     /* Highlights */
     .highlight-move { background-color: rgba(247, 247, 105, 0.6) !important; }
     .highlight-check { transition: background-color 0.2s; background-color: rgba(255, 0, 0, 0.4) !important; }
     .highlight-select { background-color: ${colors.primary}60 !important; }
+    .highlight-wrong { background-color: rgba(239, 68, 68, 0.5) !important; }
 
     /* Legal Move Dots */
     .square-55d63 { position: relative; }
@@ -111,10 +156,36 @@ export const getChessboardHtml = (
         font-weight: bold;
         font-size: 10px;
     }
+    /* Spare Pieces Palette */
+    .spare-pieces-7492f {
+        display: ${isSetup ? 'flex' : 'none'} !important;
+        justify-content: center;
+        gap: 8px;
+        padding: 12px;
+        background: rgba(0,0,0,0.05);
+        border-radius: 12px;
+        margin: 10px 0;
+    }
+    .spare-pieces-7492f .piece-417db {
+        width: 40px !important;
+        height: 40px !important;
+        border-radius: 6px;
+        cursor: pointer;
+        transition: transform 0.1s;
+    }
+    .spare-pieces-7492f .piece-417db:active {
+        transform: scale(0.9);
+    }
+    .highlight-spare {
+        background-color: ${colors.primary}40 !important;
+        box-shadow: 0 0 0 2px ${colors.primary};
+    }
   </style>
 </head>
 <body>
-  <div id="board"></div>
+  <div id="boardContainer">
+    <div id="board"></div>
+  </div>
   <script>
     var board = null;
     var game = new Chess();
@@ -147,7 +218,7 @@ export const getChessboardHtml = (
       }
     }
     function removeHighlights () { 
-        $board.find('.square-55d63').removeClass('highlight-select'); 
+        $board.find('.square-55d63').removeClass('highlight-select highlight-wrong'); 
         if (!${!isSetup && gameOptions.highlightLastMove}) {
             $board.find('.square-55d63').removeClass('highlight-move');
         }
@@ -155,25 +226,22 @@ export const getChessboardHtml = (
 
     function onSquareClick (square) {
       if (${isSetup}) {
-        position = board.position();
-        if (!currentPiece) {
-          if (position[square]) {
-            delete position[square];
-            board.position(position, false);
+        var pos = board.position();
+        
+        // If a piece is selected from palette, place it
+        if (currentPiece) {
+            pos[square] = currentPiece;
+            board.position(pos, false);
             setTimeout(sendPosition, 10);
-          }
-          return;
+            return;
         }
-        // If current piece is 'trash', it means we are in remove mode
-        if (currentPiece === 'trash') {
-          delete position[square];
-          board.position(position, false);
-          setTimeout(sendPosition, 10);
-          return;
+        
+        // If no piece is selected, tapping an existing piece deletes it
+        if (pos[square]) {
+            delete pos[square];
+            board.position(pos, false);
+            setTimeout(sendPosition, 10);
         }
-        position[square] = currentPiece;
-        board.position(position, false);
-        setTimeout(sendPosition, 10);
         return;
       }
 
@@ -216,9 +284,11 @@ export const getChessboardHtml = (
     function sendPosition() {
       if (!${isSetup}) return;
       var pos = board.position();
+      var fen = buildFen(pos, 'w');
       window.ReactNativeWebView.postMessage(JSON.stringify({
-        type: 'position_update',
+        type: 'position_changed',
         position: pos,
+        fen: board.fen(),
         pieceCount: Object.keys(pos).length
       }));
     }
@@ -227,23 +297,39 @@ export const getChessboardHtml = (
       if (!${isSetup}) {
         if (game.game_over()) return false;
         if (game.turn() !== piece.charAt(0)) return false;
+        
+        // Show possible moves when dragging a piece
+        var moves = game.moves({ square: source, verbose: true });
+        if (moves.length > 0) {
+          $board.find('.square-' + source).addClass('highlight-select');
+          for (var i = 0; i < moves.length; i++) {
+            greyDot(moves[i].to);
+          }
+        }
       }
-      removeHighlights();
       selectedSquare = null;
+      try { window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'drag_start' })); } catch(e) {}
     }
 
     function onDrop (source, target) {
       removeGreyDots();
+      try { window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'drag_end' })); } catch(e) {}
       if (${isSetup}) {
         setTimeout(sendPosition, 50);
         return;
       }
       var move = game.move({ from: source, to: target, promotion: 'q' });
-      if (move === null) return 'snapback';
+      if (move === null) {
+        removeHighlights();
+        return 'snapback';
+      }
       updateStatus(move.san, move);
     }
 
-    function onSnapEnd () { board.position(game.fen()); }
+    function onSnapEnd () {
+      board.position(game.fen());
+      try { window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'drag_end' })); } catch(e) {}
+    }
 
     function updateStatus (lastSan, lastMove) {
       if (${!isSetup && gameOptions.highlightLastMove}) {
@@ -321,13 +407,56 @@ export const getChessboardHtml = (
     board = Chessboard('board', config);
     if (${isSetup}) { position = board.position(); }
     
-    setTimeout(function() { 
-        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'ready' })); 
-    }, 200);
+    // Bind click AND touch events on squares to support tap-to-move and setup piece placing
+    var _lastTapTime = 0;
+    function handleSquareTap(e) {
+      var now = Date.now();
+      if (now - _lastTapTime < 200) return; // debounce
+      _lastTapTime = now;
+      var square = $(this).attr('data-square');
+      if (square) onSquareClick(square);
+    }
+    $('#board').on('click', '.square-55d63', handleSquareTap);
+    $('#board').on('touchend', '.square-55d63', function(e) {
+      // Only handle single-finger taps, not drags
+      if (e.originalEvent && e.originalEvent.changedTouches && e.originalEvent.changedTouches.length === 1) {
+        if (e.cancelable) e.preventDefault(); // Prevent ghost click
+        handleSquareTap.call(this, e);
+      }
+    });
 
-    window.addEventListener('message', function(event) {
+    // Handle tapping spare pieces for tap-to-place
+    $(document).on('click touchend', '.spare-pieces-7492f .piece-417db', function(e) {
+        if (e.type === 'touchend' && e.cancelable) e.preventDefault();
+        
+        var pieceCode = $(this).attr('data-piece');
+        if (pieceCode) {
+            if (currentPiece === pieceCode) {
+                // Deselect
+                currentPiece = null;
+                $('.spare-pieces-7492f .piece-417db').removeClass('highlight-spare');
+            } else {
+                // Select
+                currentPiece = pieceCode;
+                $('.spare-pieces-7492f .piece-417db').removeClass('highlight-spare');
+                $(this).addClass('highlight-spare');
+            }
+        }
+    });
+    
+    setTimeout(function() { 
         try {
-            var data = JSON.parse(event.data);
+            window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'ready' })); 
+        } catch(e) {
+            console.error('Failed to send ready message:', e);
+        }
+    }, 300);
+
+    window.handleReactNativeMessage = function(data) {
+        try {
+            if (typeof data === 'string') {
+                data = JSON.parse(data);
+            }
             if(data.type === 'engine_move') {
                 // Parse UCI move (e.g., "e2e4" or "e7e8q")
                 var moveInput = data.move;
@@ -341,7 +470,7 @@ export const getChessboardHtml = (
                 
                 var move = game.move(moveInput);
                 if (move) {
-                    board.position(game.fen());
+                    board.position(game.fen(), true);
                     updateStatus(move.san, move);
                 } else {
                     console.error('Engine sent invalid move:', data.move);
@@ -358,7 +487,7 @@ export const getChessboardHtml = (
             }
             if(data.type === 'set_fen') {
                 game.load(data.fen);
-                board.position(data.fen);
+                board.position(data.fen, true);
                 updateStatus();
             }
             if(data.type === 'set_piece') { currentPiece = data.piece; }
@@ -379,6 +508,25 @@ export const getChessboardHtml = (
                 var fen = buildFen(pos, data.turn || 'w');
                 window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'fen_ready', fen: fen }));
             }
+            if(data.type === 'highlight_wrong_move') {
+                removeHighlights();
+                removeGreyDots();
+                $board.find('.square-' + data.from).addClass('highlight-wrong');
+                $board.find('.square-' + data.to).addClass('highlight-wrong');
+            }
+            if(data.type === 'flip_board') {
+                board.flip();
+            }
+            if(data.type === 'set_orientation') {
+                board.orientation(data.orientation);
+            }
+        } catch(e) {}
+    };
+
+    window.addEventListener('message', function(event) {
+        try {
+            var data = event.data;
+            window.handleReactNativeMessage(data);
         } catch(e) {}
     });
   </script>

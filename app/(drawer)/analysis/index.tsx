@@ -1,330 +1,584 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { 
     View, 
+    Text, 
     StyleSheet, 
     TouchableOpacity, 
-    Text, 
-    Dimensions, 
-    ActivityIndicator, 
-    Platform, 
     ScrollView, 
-    StatusBar 
+    Dimensions, 
+    Platform,
+    StatusBar,
+    ActivityIndicator,
+    Alert,
+    BackHandler
 } from 'react-native';
 import { WebView } from 'react-native-webview';
+import { useLocalSearchParams, useFocusEffect, useRouter } from 'expo-router';
+import { useIsFocused } from '@react-navigation/native';
+import { injectWebViewMessage } from '../../../src/utils/chess';
 import { 
-    RotateCcw, 
-    TrendingUp, 
-    CheckCircle, 
-    XCircle, 
-    AlertCircle, 
-    ChevronLeft,
-    Share2
+    Activity, 
+    ChevronLeft, 
+    Settings, 
+    Lightbulb, 
+    Database, 
+    RotateCcw,
+    Zap
 } from 'lucide-react-native';
-import Animated, { FadeIn, useSharedValue, useAnimatedStyle, withSpring } from 'react-native-reanimated';
+import Animated, { FadeIn, useAnimatedStyle, withTiming, FadeInUp } from 'react-native-reanimated';
+import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
-import { COLORS, THEME } from '../../../src/constants/theme';
+import { Chess } from 'chess.js';
 import { Header } from '../../../src/components/Header';
+import { THEME } from '../../../src/constants/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
-import { formatMovesToSAN } from '../../../src/utils/chess';
-import { analyzePosition } from '../../../src/api/engine';
 import { getChessboardHtml } from '../../../src/utils/chessboardHtml';
+import { analyzePosition } from '../../../src/api/engine';
+import { GradientButton } from '../../../src/components/GradientButton';
 
 const { width } = Dimensions.get('window');
-const BOARD_SIZE = width * 0.92;
+const BOARD_SIZE = width * 0.95;
 
-const SOUNDS = {
-  move: 'https://lichess.org/assets/sound/standard/Move.ogg',
-  capture: 'https://lichess.org/assets/sound/standard/Capture.ogg',
-  check: 'https://lichess.org/assets/sound/standard/Check.ogg',
-};
+const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
-interface MoveRecord {
+interface MoveNode {
+    id: string;
+    fen: string;
     san: string;
-    eval: string;
-    quality?: 'best' | 'good' | 'inaccuracy' | 'mistake' | 'blunder' | 'brilliant' | 'book';
-    color: 'w' | 'b';
+    parentId: string | null;
+    childrenIds: string[];
+    ply: number;
 }
 
 export default function AnalysisScreen() {
     const webviewRef = useRef<WebView>(null);
+    const router = useRouter();
+    const params = useLocalSearchParams();
+    const isFocused = useIsFocused();
     const { colors, isDark, boardTheme, pieceSet, gameOptions } = useTheme();
-    const [engineEval, setEngineEval] = useState('0.00');
-    const [engineDepth, setEngineDepth] = useState(0);
-    const [isThinking, setIsThinking] = useState(false);
     
-    // Navigation & History
-    const [history, setHistory] = useState<MoveRecord[]>([]);
-    const [fenHistory, setFenHistory] = useState<string[]>(['start']);
-    const [currentMoveIndex, setCurrentMoveIndex] = useState(0);
-    const [fen, setFen] = useState('start');
+    const [fen, setFen] = useState(START_FEN);
+    const lastSyncedFen = useRef(START_FEN);
+    const [turn, setTurn] = useState<'w' | 'b'>('w');
     
-    const [continuation, setContinuation] = useState<string[]>([]);
-    const [multiPVLines, setMultiPVLines] = useState<any[]>([]);
-    const [accuracy, setAccuracy] = useState<number | null>(null);
-    const [lastWhiteEval, setLastWhiteEval] = useState(0.3);
-    const [boardReady, setBoardReady] = useState(false);
-    const lastSyncedFen = useRef<string>('');
-    const [soundObjects, setSoundObjects] = useState<{ [key: string]: Audio.Sound }>({});
-    
-    // Evaluation Bar Shared Value
-    const evalPercentage = useSharedValue(50);
-
-    const animatedEvalBar = useAnimatedStyle(() => {
-        return {
-            height: withSpring(`${100 - evalPercentage.value}%`, { damping: 15, stiffness: 60 })
-        };
+    // Move Tree State
+    const [moveTree, setMoveTree] = useState<MoveTree>({
+        'root': { id: 'root', fen: START_FEN, san: '', parentId: null, childrenIds: [], ply: 0 }
     });
+    const [currentNodeId, setCurrentNodeId] = useState<string>('root');
+    const [boardReady, setBoardReady] = useState(false);
+    
+    // Engine State
+    const [isAnalyzing, setIsAnalyzing] = useState(false);
+    const [evalScore, setEvalScore] = useState<number>(0);
+    const [bestMoveStr, setBestMoveStr] = useState<string>('');
+    const [depthReached, setDepthReached] = useState<number>(0);
 
+    const resetAnalysisState = () => {
+        setFen(START_FEN);
+        setMoveTree({
+            'root': { id: 'root', fen: START_FEN, san: '', parentId: null, childrenIds: [], ply: 0 }
+        });
+        setCurrentNodeId('root');
+        setEvalScore(0);
+        setBestMoveStr('');
+        setDepthReached(0);
+        setIsAnalyzing(false);
+        router.setParams({ setupFen: '', reviewMode: '', reviewHistory: '', reviewSAN: '' });
+    };
+
+    useFocusEffect(
+        React.useCallback(() => {
+            const onBackPress = () => {
+                if (Object.keys(moveTree).length > 1) {
+                    Alert.alert(
+                        "Exit Analysis?",
+                        "Are you sure you want to exit? Your analysis will be lost.",
+                        [
+                            { text: "Cancel", style: "cancel" },
+                            { text: "Exit", style: "destructive", onPress: () => {
+                                resetAnalysisState();
+                                router.back();
+                            }}
+                        ]
+                    );
+                    return true;
+                }
+                resetAnalysisState();
+                return false;
+            };
+
+            const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+
+            return () => {
+                subscription.remove();
+                resetAnalysisState();
+            };
+        }, [moveTree])
+    );
+
+    const boardHtml = React.useMemo(() => {
+        return getChessboardHtml({
+            orientation: 'white',
+            fen: 'start',
+            draggable: true
+        }, colors, boardTheme, pieceSet, gameOptions);
+    }, [boardTheme, pieceSet, gameOptions]);
+
+    // Pre-load from passed params if available
     useEffect(() => {
-        if (boardReady) {
-            fetchBackendEval('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1', '', 'w', true);
+        if (params.reviewMode === 'true') {
+            if (params.reviewHistory && params.reviewSAN) {
+                try {
+                    const parsedHistory = JSON.parse(params.reviewHistory as string);
+                    const parsedSAN = JSON.parse(params.reviewSAN as string);
+                    
+                    if (parsedHistory && parsedHistory.length > 0) {
+                        const newTree: MoveTree = {};
+                        let currentParentId: string | null = null;
+                        let lastId = 'root';
+                        
+                        parsedHistory.forEach((f: string, idx: number) => {
+                            const id = idx === 0 ? 'root' : `move_${idx}`;
+                            const san = idx === 0 ? '' : (parsedSAN[idx - 1] || '');
+                            
+                            newTree[id] = {
+                                id,
+                                fen: f,
+                                san,
+                                parentId: currentParentId,
+                                childrenIds: idx < parsedHistory.length - 1 ? [`move_${idx + 1}`] : [],
+                                ply: idx
+                            };
+                            currentParentId = id;
+                            lastId = id;
+                        });
+                        
+                        setMoveTree(newTree);
+                        setCurrentNodeId(lastId);
+                        setFen(parsedHistory[parsedHistory.length - 1]);
+                        setTurn(parsedHistory[parsedHistory.length - 1].includes(' b ') ? 'b' : 'w');
+                    }
+                } catch(e) {}
+            }
+            router.setParams({ reviewMode: '', reviewHistory: '', reviewSAN: '' });
+        } else if (params.setupFen) {
+            const initialFen = params.setupFen as string;
+            setFen(initialFen);
+            setMoveTree({
+                'root': { id: 'root', fen: initialFen, san: '', parentId: null, childrenIds: [], ply: 0 }
+            });
+            setCurrentNodeId('root');
+            setTurn(initialFen.includes(' b ') ? 'b' : 'w');
+            router.setParams({ setupFen: '' });
         }
-    }, [boardReady]);
+    }, [params.reviewMode, params.setupFen, params.reviewHistory, params.reviewSAN]);
 
-    // Update WebView theme when colors change
-    useEffect(() => {
-        if (boardReady) {
-            webviewRef.current?.injectJavaScript(`window.postMessage(JSON.stringify({type: 'update_theme', colors: ${JSON.stringify(colors)}}), '*'); true;`);
-        }
-    }, [colors, boardReady]);
-
+    // Handle incoming messages from WebView
     const handleMessage = async (event: any) => {
         try {
             const data = JSON.parse(event.nativeEvent.data);
             if (data.type === 'move') {
-                // Determine sound and feedback
-                playSound(data.san.includes('x') ? 'capture' : 'move');
-                if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-
-                // Update history and index for navigation
-                const newFenHistory = fenHistory.slice(0, currentMoveIndex + 1);
-                newFenHistory.push(data.fen);
-                setFenHistory(newFenHistory);
-                setCurrentMoveIndex(newFenHistory.length - 1);
+                if (Platform.OS !== 'web') Haptics.selectionAsync();
+                
+                let nextNodeId = '';
+                
+                setMoveTree(prevTree => {
+                    const currentNode = prevTree[currentNodeId];
+                    if (!currentNode) return prevTree;
+                    
+                    // Check if this move already exists as a child
+                    const existingChildId = currentNode.childrenIds.find(childId => prevTree[childId]?.san === data.san);
+                    
+                    if (existingChildId) {
+                        nextNodeId = existingChildId;
+                        return prevTree;
+                    }
+                    
+                    // Create new branch/node
+                    const newNodeId = `move_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+                    nextNodeId = newNodeId;
+                    const newNode: MoveNode = {
+                        id: newNodeId,
+                        fen: data.fen,
+                        san: data.san,
+                        parentId: currentNodeId,
+                        childrenIds: [],
+                        ply: currentNode.ply + 1
+                    };
+                    
+                    return {
+                        ...prevTree,
+                        [currentNodeId]: {
+                            ...currentNode,
+                            childrenIds: [...currentNode.childrenIds, newNodeId]
+                        },
+                        [newNodeId]: newNode
+                    };
+                });
+                
+                // Use setTimeout to ensure state setter runs after setMoveTree has been processed,
+                // or just wait for the next render. Actually, setting it directly here is generally safe
+                // in React 18 outside of concurrent mode, but to be robust, we'll set it here.
+                // Note: nextNodeId is captured synchronously because setMoveTree updater runs synchronously
+                // if it's the first time in the queue during an event handler.
+                setTimeout(() => {
+                    if (nextNodeId) setCurrentNodeId(nextNodeId);
+                }, 0);
+                
                 setFen(data.fen);
-
-                lastSyncedFen.current = data.fen; 
-                await fetchBackendEval(data.fen, data.san, data.turn, false);
+                setTurn(data.turn);
             } else if (data.type === 'ready') {
                 setBoardReady(true);
             }
         } catch {}
     };
 
+    // Keep WebView in sync with colors via postMessage instead of HTML reload
     useEffect(() => {
-        loadSounds();
-        return () => {
-            Object.values(soundObjects).forEach(s => s.unloadAsync());
-        };
-    }, []);
-
-    const loadSounds = async () => {
-        const loadedSounds: { [key: string]: Audio.Sound } = {};
-        for (const [key, url] of Object.entries(SOUNDS)) {
-            try {
-                const { sound } = await Audio.Sound.createAsync({ uri: url });
-                loadedSounds[key] = sound;
-            } catch (e) {}
+        if (boardReady) {
+            injectWebViewMessage(webviewRef, { type: 'update_theme', colors });
         }
-        setSoundObjects(loadedSounds);
-    };
+    }, [colors, boardReady]);
 
-    const playSound = async (type: keyof typeof SOUNDS) => {
-        if (soundObjects[type]) {
-            try { await soundObjects[type].replayAsync(); } catch (e) {}
+    // Update board position when fen changes externally (e.g. navigation)
+    useEffect(() => {
+        if (boardReady && fen !== lastSyncedFen.current) {
+            lastSyncedFen.current = fen;
+            injectWebViewMessage(webviewRef, { type: 'set_fen', fen });
+            webviewRef.current?.injectJavaScript(`
+                $('#board .square-55d63').removeClass('highlight-move');
+                true;
+            `);
         }
-    };
+    }, [fen, boardReady]);
 
-    const calculateAccuracy = (history: MoveRecord[]) => {
-        if (history.length === 0) return 100;
-        let totalCPL = 0;
-        history.forEach(m => {
-            const val = parseFloat(m.eval);
-            if (!isNaN(val)) totalCPL += Math.abs(val);
-        });
-        const avgCPL = totalCPL / history.length;
-        return Math.max(0, Math.min(100, 103.1668 * Math.exp(-0.043876 * (avgCPL * 10))));
-    };
+    // Auto-analyze when current node changes
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            runAnalysis();
+        }, 500); // Wait for rapid scrubbing to finish
+        return () => clearTimeout(timer);
+    }, [currentNodeId]);
 
-    const getEvalSummary = (val: number, isMate: boolean) => {
-        if (isMate) return val > 0 ? "White has forced mate" : "Black has forced mate";
-        if (val > 2.5) return "White is winning";
-        if (val > 1.0) return "White is better";
-        if (val > 0.4) return "White has slight advantage";
-        if (val < -2.5) return "Black is winning";
-        if (val < -1.0) return "Black is better";
-        if (val < -0.4) return "Black has slight advantage";
-        return "Position is equal";
-    };
-
-    const fetchBackendEval = async (fen: string, san: string, turn: 'w' | 'b', isInitial: boolean) => {
-        setIsThinking(true);
+    const runAnalysis = async () => {
+        if (!fen || fen === 'start') return;
+        setIsAnalyzing(true);
+        setDepthReached(0);
         try {
-            const result = await analyzePosition(fen, 20, 1500);
-            const rawEval = result.evaluation;
-            
-            let evalText = result.is_mate ? `M${result.mate_in}` : (rawEval > 0 ? `+${rawEval.toFixed(2)}` : rawEval.toFixed(2));
-            setEngineEval(evalText);
-            setEngineDepth(result.depth);
-            setMultiPVLines(result.lines || []);
-            
-            if (result.continuation && result.continuation.length > 0) {
-                setContinuation(formatMovesToSAN(fen, result.continuation));
+            const res = await analyzePosition(fen, 14, 2000);
+            if (res) {
+                setEvalScore(res.evaluation);
+                
+                let sanMove = res.best_move;
+                if (res.best_move) {
+                    try {
+                        const chess = new Chess(fen);
+                        const move = chess.move({
+                            from: res.best_move.substring(0, 2),
+                            to: res.best_move.substring(2, 4),
+                            promotion: res.best_move.length > 4 ? res.best_move[4] : undefined
+                        });
+                        if (move) {
+                            sanMove = move.san;
+                        }
+                    } catch(e) {}
+                }
+                setBestMoveStr(sanMove);
+                setDepthReached(14);
+                
+                // Highlight best move on board
+                if (res.best_move && boardReady) {
+                    const from = res.best_move.substring(0, 2);
+                    const to = res.best_move.substring(2, 4);
+                    webviewRef.current?.injectJavaScript(`
+                        $('#board .square-55d63').removeClass('highlight-move');
+                        $('#board .square-' + '${from}').addClass('highlight-move');
+                        $('#board .square-' + '${to}').addClass('highlight-move');
+                        true;
+                    `);
+                }
             }
-
-            const evalForWhite = turn === 'w' ? rawEval : -rawEval;
-            let percentage = 50 + (evalForWhite * 5);
-            evalPercentage.value = Math.max(5, Math.min(95, percentage));
-
-            if (san && !isInitial) {
-                const newMove: MoveRecord = { san, eval: evalText, color: turn };
-                const newHistory = [...history, newMove];
-                setHistory(newHistory);
-                setAccuracy(calculateAccuracy(newHistory));
-            }
-        } catch (error) {
-            console.error('Analysis failed:', error);
+        } catch (e) {
+            console.error(e);
         } finally {
-            setIsThinking(false);
+            setIsAnalyzing(false);
         }
     };
 
-    const navigateMove = (index: number) => {
-        if (index >= 0 && index < fenHistory.length) {
-            setCurrentMoveIndex(index);
-            setFen(fenHistory[index]);
+    const navigateNode = (nodeId: string) => {
+        const node = moveTree[nodeId];
+        if (node) {
             if (Platform.OS !== 'web') Haptics.selectionAsync();
+            setCurrentNodeId(nodeId);
+            setFen(node.fen);
+            setTurn(node.fen.includes(' b ') ? 'b' : 'w');
         }
     };
 
-    const resetBoard = () => {
-        setFen('start');
-        setFenHistory(['start']);
-        setCurrentMoveIndex(0);
-        setHistory([]);
-        setAccuracy(null);
-        setEngineEval('0.00');
-        evalPercentage.value = 50;
-        setTimeout(() => fetchBackendEval('start', '', 'w', true), 300);
-    };
-
-    const renderQualityIcon = (quality?: string) => {
-        switch(quality) {
-            case 'best': return <CheckCircle size={12} color={colors.success} />;
-            case 'good': return <CheckCircle size={12} color={colors.primary} />;
-            case 'inaccuracy': return <AlertCircle size={12} color={colors.accent} />;
-            case 'mistake': return <XCircle size={12} color="#f97316" />;
-            case 'blunder': return <XCircle size={12} color={colors.error} />;
-            default: return null;
+    const handleFlip = () => {
+        if (boardReady) {
+            if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            injectWebViewMessage(webviewRef, { type: 'flip_board' });
         }
     };
 
-    const boardHtml = React.useMemo(() => {
-        return getChessboardHtml({
-            orientation: 'white',
-            fen: fen,
-            draggable: true
-        }, colors, boardTheme, pieceSet, gameOptions);
-    }, [colors, boardTheme, pieceSet, gameOptions, fen]);
+    const getActiveLine = () => {
+        const line: MoveNode[] = [];
+        let curr: string | null = 'root';
+        const pathSet = new Set<string>();
+        let temp: string | null = currentNodeId;
+        while (temp) {
+            pathSet.add(temp);
+            temp = moveTree[temp]?.parentId || null;
+        }
+        
+        while (curr) {
+            const node = moveTree[curr];
+            if (!node) break;
+            if (node.id !== 'root') line.push(node);
+            if (node.childrenIds.length === 0) break;
+            const nextChild = node.childrenIds.find(id => pathSet.has(id)) || node.childrenIds[node.childrenIds.length - 1];
+            curr = nextChild;
+        }
+        return line;
+    };
+
+    const activeLine = getActiveLine();
+
+    const navigateBack = () => {
+        const node = moveTree[currentNodeId];
+        if (node && node.parentId) navigateNode(node.parentId);
+    };
+
+    const navigateForward = () => {
+        const node = moveTree[currentNodeId];
+        if (node && node.childrenIds.length > 0) {
+            navigateNode(node.childrenIds[node.childrenIds.length - 1]);
+        }
+    };
+
+    const navigateStart = () => navigateNode('root');
+
+    // Get variations for current node's parent (siblings)
+    const getVariations = () => {
+        const node = moveTree[currentNodeId];
+        if (!node || !node.parentId) return [];
+        const parent = moveTree[node.parentId];
+        if (!parent || parent.childrenIds.length <= 1) return [];
+        return parent.childrenIds.map(id => moveTree[id]).filter(n => n && n.id !== currentNodeId);
+    };
+
+    const variations = getVariations();
+
+    // Eval Bar Calculation
+    // Clamped between -5 (Black Winning) and +5 (White Winning)
+    const normalizedEval = Math.max(-5, Math.min(5, evalScore)); 
+    const whitePercentage = ((normalizedEval + 5) / 10) * 100;
+    
+    const evalBarStyle = useAnimatedStyle(() => ({
+        height: withTiming(`${whitePercentage}%`, { duration: 500 }),
+    }));
 
     return (
         <View style={[styles.container, { backgroundColor: colors.background }]}>
             <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
-            
             <Header 
-                title="Analysis" 
-                rightElement={
-                    <TouchableOpacity style={[styles.headerBtn, { backgroundColor: colors.surface }]} onPress={resetBoard}>
-                        <RotateCcw color={colors.accent} size={20} />
-                    </TouchableOpacity>
-                }
+                title="Deep Analysis" 
+                showBackButton={true}
+                onBackPress={() => {
+                    if (Object.keys(moveTree).length > 1) {
+                        Alert.alert(
+                            "Exit Analysis?",
+                            "Are you sure you want to exit? Your analysis will be lost.",
+                            [
+                                { text: "Cancel", style: "cancel" },
+                                { text: "Exit", style: "destructive", onPress: () => { resetAnalysisState(); router.back(); } }
+                            ]
+                        );
+                    } else {
+                        resetAnalysisState();
+                        router.back();
+                    }
+                }}
             />
+            
+            <View style={styles.mainLayout}>
+                {/* WIDER EVAL BAR */}
+                <View style={[styles.evalBarContainer, { borderColor: colors.border, backgroundColor: '#000000' }]}>
+                    <Animated.View style={[styles.evalBarWhite, evalBarStyle, { backgroundColor: '#FFFFFF' }]} />
+                    
+                    {/* Eval Number Overlay */}
+                    <View style={styles.evalTextContainer}>
+                        <Text style={[
+                            styles.evalBarText, 
+                            { color: evalScore > 0 ? '#000000' : '#FFFFFF' },
+                            evalScore > 0 ? { bottom: 10 } : { top: 10 }
+                        ]}>
+                            {evalScore > 0 ? '+' : ''}{evalScore.toFixed(1)}
+                        </Text>
+                    </View>
+                </View>
 
-            {/* Engine Overview */}
-            <Animated.View entering={FadeIn} style={[styles.enginePanel, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                <View style={styles.engineHeader}>
-                    <View style={[styles.evalBadge, { backgroundColor: colors.primary + '20' }]}>
-                        <Text style={[styles.evalBadgeText, { color: colors.primaryLight }]}>{engineEval}</Text>
-                    </View>
-                    <View style={styles.summaryContainer}>
-                        <Text style={[styles.summaryText, { color: colors.text }]}>
-                            {getEvalSummary(parseFloat(engineEval) || 0, engineEval.includes('M'))}
-                        </Text>
-                        <Text style={[styles.betterMoveText, { color: colors.accent }]}>
-                            {continuation.length > 0 ? `Best move: ${continuation[0]}` : 'Calculating...'}
-                        </Text>
-                    </View>
-                    {accuracy !== null && (
-                        <View style={[styles.accuracyBadge, { backgroundColor: colors.accent + '20' }]}>
-                            <Text style={[styles.accuracyValue, { color: colors.accent }]}>{Math.round(accuracy)}%</Text>
-                            <Text style={[styles.accuracyLabel, { color: colors.accent }]}>ACC</Text>
-                        </View>
+                {/* BOARD */}
+                <View 
+                    style={[styles.boardWrapper, { backgroundColor: colors.surface }]}
+                    collapsable={false}
+                >
+                    {isFocused && (
+                        <WebView
+                            key="analysis-webview"
+                            ref={webviewRef}
+                            originWhitelist={['*']}
+                            source={{ html: boardHtml }}
+                            style={[styles.webview, { opacity: 0.99 }]}
+                            onMessage={handleMessage}
+                            javaScriptEnabled={true}
+                            domStorageEnabled={true}
+                            scrollEnabled={false}
+                            bounces={false}
+                            overScrollMode="never"
+                            nestedScrollEnabled={false}
+                            startInLoadingState={false}
+                            androidLayerType="software"
+                        />
                     )}
-                </View>
-
-                <View style={styles.multiPVContainer}>
-                    {multiPVLines.slice(0, 3).map((line, idx) => (
-                        <View key={idx} style={styles.pvLine}>
-                            <Text style={[styles.pvRank, { color: colors.textMuted }]}>{idx + 1}</Text>
-                            <Text style={[styles.pvMove, { color: colors.text }]}>{line.move}</Text>
-                            <Text style={[styles.pvEval, { color: colors.accent }]}>
-                                {line.mate_in !== 0 ? `M${Math.abs(line.mate_in)}` : (line.evaluation > 0 ? `+${line.evaluation.toFixed(1)}` : line.evaluation.toFixed(1))}
-                            </Text>
-                        </View>
-                    ))}
-                </View>
-            </Animated.View>
-
-            {/* Board Section */}
-            <View style={styles.boardWrapper}>
-                <View style={[styles.evalBarContainer, { backgroundColor: colors.white }]}>
-                    <Animated.View style={[styles.blackEval, animatedEvalBar, { backgroundColor: colors.primaryDark }]} />
-                    <View style={styles.whiteEval} />
-                    <View style={[styles.evalMarker, { backgroundColor: colors.accent }]} />
-                </View>
-
-                <View style={[styles.boardContainer, { backgroundColor: colors.surface }]}>
-                    <WebView 
-                        ref={webviewRef}
-                        originWhitelist={['*']}
-                        source={{ html: boardHtml }}
-                        style={styles.webview}
-                        onMessage={handleMessage}
-                        scrollEnabled={false}
-                        bounces={false}
-                    />
                 </View>
             </View>
 
-            {/* Move History */}
-            <View style={[styles.notationArea, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                <View style={styles.navigationControls}>
-                    <TouchableOpacity style={styles.navBtn} onPress={() => navigateMove(currentMoveIndex - 1)}>
-                        <ChevronLeft color={colors.primary} size={24} />
+            <View style={styles.bottomSection}>
+                {/* Engine Insight Panel */}
+                <Animated.View style={[styles.engineCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                    <LinearGradient
+                        colors={isDark ? [colors.surfaceElevated, colors.surface] : [colors.surface, colors.surfaceLight]}
+                        style={StyleSheet.absoluteFill}
+                    />
+                    <View style={styles.engineHeader}>
+                        <View style={styles.engineBadgeContainer}>
+                            <Zap color={colors.accent} size={14} fill={colors.accent} />
+                            <Text style={[styles.engineNameText, { color: colors.accent }]}>STOCKFISH 18</Text>
+                            {isAnalyzing && <ActivityIndicator size="small" color={colors.accent} style={{ marginLeft: 6 }} />}
+                        </View>
+                        <Text style={[styles.depthText, { color: colors.textMuted }]}>
+                            Depth {depthReached}/14
+                        </Text>
+                    </View>
+                    
+                    <View style={styles.evalScoreRow}>
+                        <Text style={[styles.mainEvalScore, { color: evalScore > 0 ? colors.success : colors.error }]}>
+                            {evalScore > 0 ? '+' : ''}{evalScore.toFixed(2)}
+                        </Text>
+                        <View style={styles.bestMoveContainer}>
+                            <Text style={[styles.bestMoveLabel, { color: colors.textMuted }]}>Best Move</Text>
+                            <Text style={[styles.bestMoveVal, { color: colors.text }]}>{bestMoveStr || '...'}</Text>
+                        </View>
+                    </View>
+                </Animated.View>
+
+                {/* Move Navigation */}
+                <View style={styles.controlsRow}>
+                    <TouchableOpacity 
+                        style={[styles.iconBtn, { backgroundColor: colors.surfaceLight }]}
+                        onPress={navigateStart}
+                    >
+                        <ChevronLeft color={colors.text} size={20} />
+                        <ChevronLeft color={colors.text} size={20} style={{ marginLeft: -12 }} />
                     </TouchableOpacity>
-                    <Text style={[styles.navText, { color: colors.text }]}>Move {Math.floor(currentMoveIndex / 2) + 1}</Text>
-                    <TouchableOpacity style={[styles.navBtn, { transform: [{ rotate: '180deg' }] }]} onPress={() => navigateMove(currentMoveIndex + 1)}>
-                        <ChevronLeft color={colors.primary} size={24} />
+
+                    <TouchableOpacity 
+                        style={[styles.iconBtn, { backgroundColor: colors.surfaceLight, flex: 1 }]}
+                        onPress={navigateBack}
+                    >
+                        <ChevronLeft color={colors.text} size={24} />
+                    </TouchableOpacity>
+
+                    <TouchableOpacity 
+                        style={[styles.iconBtn, { backgroundColor: colors.surfaceLight, flex: 1 }]}
+                        onPress={navigateForward}
+                    >
+                        <View style={{ transform: [{ rotate: '180deg' }] }}>
+                            <ChevronLeft color={colors.text} size={24} />
+                        </View>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity 
+                        style={[styles.iconBtn, { backgroundColor: colors.surfaceLight }]}
+                        onPress={handleFlip}
+                    >
+                        <RotateCcw color={colors.text} size={20} />
                     </TouchableOpacity>
                 </View>
 
-                <ScrollView style={styles.historyScroll} contentContainerStyle={styles.historyContent}>
-                    <View style={styles.movesGrid}>
-                        {history.map((record, index) => (
-                            <TouchableOpacity key={index} style={styles.moveRow} onPress={() => navigateMove(index + 1)}>
-                                <Text style={[styles.moveNum, { color: colors.textMuted }]}>{index % 2 === 0 ? `${Math.floor(index/2) + 1}.` : ''}</Text>
-                                <View style={[
-                                    styles.moveItem, 
-                                    { backgroundColor: colors.background },
-                                    currentMoveIndex === index + 1 && { borderColor: colors.primary, borderWidth: 1 }
-                                ]}>
-                                    <Text style={[styles.moveSan, { color: colors.text }]}>{record.san}</Text>
-                                    <Text style={[styles.moveEval, { color: colors.textMuted }]}>{record.eval}</Text>
-                                </View>
+                {/* Variations */}
+                {variations.length > 0 && (
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginVertical: 8 }}>
+                        <Text style={{ color: colors.textMuted, fontSize: 12, marginRight: 8, alignSelf: 'center' }}>Variations:</Text>
+                        {variations.map(v => (
+                            <TouchableOpacity 
+                                key={v.id} 
+                                style={[styles.moveChip, { backgroundColor: colors.surfaceLight, marginRight: 8, paddingHorizontal: 12 }]}
+                                onPress={() => navigateNode(v.id)}
+                            >
+                                <Text style={[styles.moveText, { color: colors.text }]}>{v.san}</Text>
                             </TouchableOpacity>
                         ))}
-                    </View>
-                </ScrollView>
+                    </ScrollView>
+                )}
+
+                {/* Move History Log */}
+                <View style={[styles.historyContainer, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                    <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.historyContent}>
+                        {activeLine.length === 0 ? (
+                            <Text style={[styles.emptyHistory, { color: colors.textMuted }]}>Make a move to start analyzing.</Text>
+                        ) : (
+                            <View style={styles.movesGrid}>
+                                {Array.from({ length: Math.ceil(activeLine.length / 2) }).map((_, rowIndex) => {
+                                    const wNode = activeLine[rowIndex * 2];
+                                    const bNode = activeLine[rowIndex * 2 + 1];
+                                    return (
+                                        <View key={rowIndex} style={[styles.moveRow, { borderBottomColor: colors.border }]}>
+                                            <Text style={[styles.moveNum, { color: colors.textMuted }]}>{rowIndex + 1}.</Text>
+                                            
+                                            {/* White Move */}
+                                            {wNode && (
+                                                <TouchableOpacity 
+                                                    style={[
+                                                        styles.moveChip,
+                                                        { backgroundColor: colors.surfaceLight },
+                                                        currentNodeId === wNode.id && { backgroundColor: colors.primary + '20', borderColor: colors.primary }
+                                                    ]}
+                                                    onPress={() => navigateNode(wNode.id)}
+                                                >
+                                                    <Text style={[styles.moveText, { color: currentNodeId === wNode.id ? colors.primary : colors.text }]}>
+                                                        {wNode.san}
+                                                    </Text>
+                                                </TouchableOpacity>
+                                            )}
+
+                                            {/* Black Move */}
+                                            {bNode ? (
+                                                <TouchableOpacity 
+                                                    style={[
+                                                        styles.moveChip,
+                                                        { backgroundColor: colors.surfaceLight },
+                                                        currentNodeId === bNode.id && { backgroundColor: colors.primary + '20', borderColor: colors.primary }
+                                                    ]}
+                                                    onPress={() => navigateNode(bNode.id)}
+                                                >
+                                                    <Text style={[styles.moveText, { color: currentNodeId === bNode.id ? colors.primary : colors.text }]}>
+                                                        {bNode.san}
+                                                    </Text>
+                                                </TouchableOpacity>
+                                            ) : (
+                                                <View style={[styles.moveChip, { borderColor: 'transparent' }]} />
+                                            )}
+                                        </View>
+                                    );
+                                })}
+                            </View>
+                        )}
+                    </ScrollView>
+                </View>
             </View>
         </View>
     );
@@ -334,187 +588,157 @@ const styles = StyleSheet.create({
     container: {
         flex: 1,
     },
-    headerBtn: {
-        width: 44,
-        height: 44,
-        borderRadius: 22,
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    enginePanel: {
-        marginHorizontal: 16,
-        padding: 16,
-        borderRadius: THEME.borderRadius.lg,
-        marginTop: 4,
-        borderWidth: 1,
-    },
-    engineHeader: {
+    mainLayout: {
         flexDirection: 'row',
+        paddingHorizontal: 16,
+        paddingTop: 16,
+        gap: 12,
         alignItems: 'center',
-        marginBottom: 16,
     },
-    summaryContainer: {
-        flex: 1,
-        marginHorizontal: 12,
+    evalBarContainer: {
+        width: 14, // Wider for premium feel
+        height: BOARD_SIZE,
+        borderRadius: 8,
+        borderWidth: 1,
+        overflow: 'hidden',
+        justifyContent: 'flex-end',
+        position: 'relative',
     },
-    summaryText: {
-        fontSize: 14,
-        fontWeight: '800',
+    evalBarWhite: {
+        width: '100%',
     },
-    betterMoveText: {
-        fontSize: 12,
-        fontWeight: '700',
-        marginTop: 2,
-    },
-    accuracyBadge: {
+    evalTextContainer: {
+        ...StyleSheet.absoluteFillObject,
         alignItems: 'center',
-        paddingHorizontal: 10,
-        paddingVertical: 6,
-        borderRadius: 10,
     },
-    accuracyValue: {
-        fontSize: 16,
-        fontWeight: '900',
-    },
-    accuracyLabel: {
+    evalBarText: {
+        position: 'absolute',
         fontSize: 8,
         fontWeight: '900',
     },
-    multiPVContainer: {
-        borderTopWidth: 1,
-        borderTopColor: 'rgba(255,255,255,0.05)',
-        paddingTop: 12,
-        gap: 8,
-    },
-    pvLine: {
-        flexDirection: 'row',
-        alignItems: 'center',
-    },
-    pvRank: {
-        fontSize: 10,
-        fontWeight: '900',
-        width: 15,
-    },
-    pvMove: {
-        fontSize: 12,
-        fontWeight: '800',
-        flex: 1,
-    },
-    pvEval: {
-        fontSize: 12,
-        fontWeight: '900',
-    },
-    evalBadge: {
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        borderRadius: 10,
-        minWidth: 60,
-        alignItems: 'center',
-    },
     boardWrapper: {
-        flexDirection: 'row',
-        padding: 16,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    evalBarContainer: {
-        width: 8,
-        height: BOARD_SIZE,
-        marginRight: 12,
-        borderRadius: 4,
-        overflow: 'hidden',
-        position: 'relative',
-    },
-    blackEval: {
-        width: '100%',
-        position: 'absolute',
-        top: 0,
-    },
-    whiteEval: {
-        flex: 1,
-    },
-    evalMarker: {
-        position: 'absolute',
-        width: '100%',
-        height: 2,
-        top: '50%',
-        opacity: 0.6,
-    },
-    boardContainer: {
-        width: BOARD_SIZE,
-        height: BOARD_SIZE,
+        width: BOARD_SIZE - 26, // Account for eval bar and gap
+        height: BOARD_SIZE - 26,
         borderRadius: THEME.borderRadius.md,
         overflow: 'hidden',
-        elevation: 10,
+        elevation: 8,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.15,
+        shadowRadius: 10,
     },
     webview: {
-        flex: 1,
+        width: '100%',
+        height: '100%',
         backgroundColor: 'transparent',
+        opacity: 0.99,
     },
-    notationArea: {
+    bottomSection: {
         flex: 1,
-        marginHorizontal: 16,
-        marginBottom: 20,
+        padding: 16,
+        gap: 16,
+    },
+    engineCard: {
         borderRadius: THEME.borderRadius.lg,
         borderWidth: 1,
+        padding: 16,
         overflow: 'hidden',
+        ...THEME.shadows.card,
     },
-    navigationControls: {
+    engineHeader: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        padding: 12,
-        borderBottomWidth: 1,
-        borderBottomColor: 'rgba(255,255,255,0.05)',
+        marginBottom: 12,
     },
-    navBtn: {
-        width: 40,
-        height: 40,
-        justifyContent: 'center',
+    engineBadgeContainer: {
+        flexDirection: 'row',
         alignItems: 'center',
+        gap: 6,
     },
-    navText: {
-        fontSize: 14,
+    engineNameText: {
+        fontSize: 11,
         fontWeight: '900',
+        letterSpacing: 1,
     },
-    historyScroll: {
+    depthText: {
+        fontSize: 11,
+        fontWeight: '700',
+    },
+    evalScoreRow: {
+        flexDirection: 'row',
+        alignItems: 'flex-end',
+        justifyContent: 'space-between',
+    },
+    mainEvalScore: {
+        fontSize: 36,
+        fontWeight: '900',
+        letterSpacing: -1,
+    },
+    bestMoveContainer: {
+        alignItems: 'flex-end',
+    },
+    bestMoveLabel: {
+        fontSize: 10,
+        fontWeight: '800',
+        textTransform: 'uppercase',
+        letterSpacing: 1,
+        marginBottom: 2,
+    },
+    bestMoveVal: {
+        fontSize: 20,
+        fontWeight: '800',
+    },
+    controlsRow: {
+        flexDirection: 'row',
+        gap: 10,
+    },
+    iconBtn: {
+        height: 52,
+        borderRadius: THEME.borderRadius.md,
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexDirection: 'row',
+    },
+    historyContainer: {
         flex: 1,
+        borderRadius: THEME.borderRadius.lg,
+        borderWidth: 1,
+        overflow: 'hidden',
     },
     historyContent: {
         padding: 12,
     },
+    emptyHistory: {
+        textAlign: 'center',
+        marginTop: 20,
+        fontStyle: 'italic',
+        fontWeight: '600',
+    },
     movesGrid: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
+        width: '100%',
     },
     moveRow: {
-        width: '50%',
         flexDirection: 'row',
         alignItems: 'center',
-        marginBottom: 8,
-        paddingRight: 6,
+        paddingVertical: 4,
+        borderBottomWidth: 1,
     },
     moveNum: {
-        fontSize: 12,
-        width: 25,
-        fontWeight: '700',
-    },
-    moveItem: {
-        flex: 1,
-        flexDirection: 'row',
-        alignItems: 'center',
-        paddingHorizontal: 8,
-        paddingVertical: 8,
-        borderRadius: 8,
-        gap: 6,
-    },
-    moveSan: {
+        width: 32,
         fontSize: 13,
-        fontWeight: '800',
-        flex: 1,
-    },
-    moveEval: {
-        fontSize: 10,
         fontWeight: '700',
+    },
+    moveChip: {
+        flex: 1,
+        paddingVertical: 8,
+        paddingHorizontal: 12,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: 'transparent',
+    },
+    moveText: {
+        fontSize: 14,
+        fontWeight: '800',
     },
 });

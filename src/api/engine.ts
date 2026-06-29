@@ -1,5 +1,12 @@
 import apiClient from './client';
 
+export interface MultiPVLine {
+  move: string;
+  evaluation: number;
+  continuation: string[];
+  mate_in: number;
+}
+
 export interface AnalysisResponse {
   best_move: string;
   evaluation: number;
@@ -7,6 +14,7 @@ export interface AnalysisResponse {
   depth: number;
   mate_in: number;
   is_mate: boolean;
+  lines?: MultiPVLine[];
 }
 
 export const analyzePosition = async (fen: string, depth: number = 10, movetime: number = 1000): Promise<AnalysisResponse> => {

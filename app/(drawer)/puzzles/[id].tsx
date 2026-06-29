@@ -3,11 +3,15 @@ import { View, Text, StyleSheet, TouchableOpacity, Dimensions, ActivityIndicator
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Chess } from 'chess.js';
 import apiClient from '../../../src/api/client';
+import { puzzleApi } from '../../../src/api/puzzles';
 import { ArrowLeft, RefreshCcw, CheckCircle2, TrendingUp, Users, Info, Trophy, User } from 'lucide-react-native';
 import { Audio } from 'expo-av';
 import * as Haptics from 'expo-haptics';
 import { WebView } from 'react-native-webview';
 import { useTheme } from '../../../src/context/ThemeContext';
+import { useIsFocused } from '@react-navigation/native';
+import { injectWebViewMessage } from '../../../src/utils/chess';
+import THEME from '../../../src/constants/theme';
 import { getChessboardHtml } from '../../../src/utils/chessboardHtml';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
@@ -21,9 +25,10 @@ const SOUNDS = {
 };
 
 export default function PuzzleSolverScreen() {
-  const { id } = useLocalSearchParams();
+  const { id, category_id, difficulty } = useLocalSearchParams();
   const router = useRouter();
   const webviewRef = useRef<WebView>(null);
+  const isFocused = useIsFocused();
   const { colors, isDark, boardTheme, pieceSet, gameOptions } = useTheme();
   
   const [puzzle, setPuzzle] = useState<any>(null);
@@ -33,12 +38,52 @@ export default function PuzzleSolverScreen() {
   const [soundObjects, setSoundObjects] = useState<{ [key: string]: Audio.Sound }>({});
   const [boardReady, setBoardReady] = useState(false);
 
+  const loadSounds = async () => {
+    try {
+      const moveSound = new Audio.Sound();
+      await moveSound.loadAsync({ uri: SOUNDS.move });
+      
+      const captureSound = new Audio.Sound();
+      await captureSound.loadAsync({ uri: SOUNDS.capture });
+
+      const successSound = new Audio.Sound();
+      await successSound.loadAsync({ uri: SOUNDS.generic });
+
+      setSoundObjects({
+        move: moveSound,
+        capture: captureSound,
+        generic: successSound,
+      });
+    } catch (e) {
+      console.error('Failed to load puzzle sounds:', e);
+    }
+  };
+
+  const playSound = async (type: 'move' | 'capture' | 'generic') => {
+    try {
+      const sound = soundObjects[type];
+      if (sound) {
+        await sound.setPositionAsync(0);
+        await sound.playAsync();
+      }
+    } catch (e) {
+      console.warn('Sound play error:', e);
+    }
+  };
+
+  // Series progression tracking
+  const [puzzlesInSeries, setPuzzlesInSeries] = useState<any[]>([]);
+  const currentIndexInSeries = useMemo(() => {
+    return puzzlesInSeries.findIndex((p: any) => p.id === id);
+  }, [puzzlesInSeries, id]);
+
   const boardHtml = React.useMemo(() => {
+    const isBlackToPlay = puzzle?.fen?.split(' ')[1] === 'b';
     return getChessboardHtml({
-      orientation: puzzle?.fen?.includes(' w ') ? 'white' : 'black',
+      orientation: isBlackToPlay ? 'black' : 'white',
       fen: 'start', // Will be synced via ready handshake
       draggable: status === 'playing'
-    }, colors, boardTheme, pieceSet, gameOptions);
+    }, colors, boardTheme, pieceSet, { ...gameOptions, showLegalMoves: true });
   }, [puzzle?.fen, boardTheme, pieceSet, gameOptions, status]);
 
   useEffect(() => {
@@ -49,27 +94,37 @@ export default function PuzzleSolverScreen() {
     };
   }, [id]);
 
-  const loadSounds = async () => {
-    const loadedSounds: { [key: string]: Audio.Sound } = {};
-    for (const [key, url] of Object.entries(SOUNDS)) {
-      try {
-        const { sound } = await Audio.Sound.createAsync({ uri: url });
-        loadedSounds[key] = sound;
-      } catch (e) {}
+  useEffect(() => {
+    if (category_id && difficulty) {
+      puzzleApi.list({
+        category_id: category_id as string,
+        difficulty: difficulty as string,
+        limit: 50
+      }).then(response => {
+        setPuzzlesInSeries(response.data || []);
+      }).catch(err => {
+        console.error('Fetch series error:', err);
+      });
     }
-    setSoundObjects(loadedSounds);
-  };
-
-  const playSound = async (type: keyof typeof SOUNDS) => {
-    if (soundObjects[type]) {
-      try { await soundObjects[type].replayAsync(); } catch (e) {}
-    }
-  };
+  }, [category_id, difficulty]);
 
   const fetchPuzzle = async () => {
     try {
-      const response = await apiClient.get(`/puzzles/${id}`);
-      const data = response.data.puzzle; 
+      setBoardReady(false);
+      setStatus('playing');
+      setMoveIndex(0);
+      
+      // OPTIMIZATION: Check if we already have this puzzle in our pre-fetched series
+      const localPuzzle = puzzlesInSeries.find(p => p.id === id);
+      let data;
+      
+      if (localPuzzle && localPuzzle.solution) {
+        data = localPuzzle;
+      } else {
+        const response = await apiClient.get(`/puzzles/${id}`);
+        data = response.data.puzzle; 
+      }
+      
       setPuzzle(data);
       
       const chess = new Chess(data.fen);
@@ -80,6 +135,20 @@ export default function PuzzleSolverScreen() {
     } catch (error) {
       console.error('Fetch puzzle error:', error);
       Alert.alert('Error', 'Failed to load puzzle');
+    }
+  };
+
+  const handleNextChallenge = () => {
+    const nextIndex = currentIndexInSeries + 1;
+    if (puzzlesInSeries.length > 0 && nextIndex < puzzlesInSeries.length) {
+      const nextPuzzle = puzzlesInSeries[nextIndex];
+      router.setParams({ id: nextPuzzle.id });
+    } else {
+      Alert.alert(
+        "Category Completed!",
+        "Brilliant job! You've solved all available puzzles in this category.",
+        [{ text: "Awesome", onPress: () => router.back() }]
+      );
     }
   };
 
@@ -109,19 +178,38 @@ export default function PuzzleSolverScreen() {
             playSound('generic');
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
             apiClient.post(`/puzzles/${id}/solve`).catch(() => {});
+
+            // Sync dynamic progress tracking to backend for academy reports
+            const categoryName = (puzzle && puzzle.themes && puzzle.themes.length > 0) ? puzzle.themes[0] : 'Practice';
+            const currentStepNum = currentIndexInSeries >= 0 ? currentIndexInSeries + 1 : 1;
+            const totalSteps = puzzlesInSeries.length > 0 ? puzzlesInSeries.length : 1;
+            const isCompletedAll = currentStepNum >= totalSteps;
+
+            apiClient.post('/user/progress', {
+              category_id: category_id || '',
+              category_name: categoryName,
+              progress_type: 'practice',
+              step_number: currentStepNum,
+              status: isCompletedAll ? 'completed' : 'started',
+              xp_earned: 10
+            }).catch(err => {
+              console.warn('Failed to sync dynamic progress to database:', err);
+            });
+
+            // AUTO-ADVANCE: Load next puzzle after 2 seconds
+            setTimeout(() => {
+              handleNextChallenge();
+            }, 2000);
           } else {
             // Play computer response
             const nextIndex = moveIndex + 1;
             const responseMoveUci = puzzle.solution[nextIndex];
             
             setTimeout(() => {
-              webviewRef.current?.injectJavaScript(`
-                window.postMessage(JSON.stringify({
-                  type: 'engine_move', 
-                  move: '${responseMoveUci}'
-                }), '*');
-                true;
-              `);
+              injectWebViewMessage(webviewRef, {
+                type: 'engine_move',
+                move: responseMoveUci
+              });
               
               const afterResponseChess = new Chess(tempChess.fen());
               const responseMove = afterResponseChess.move(responseMoveUci);
@@ -135,13 +223,24 @@ export default function PuzzleSolverScreen() {
           // Wrong move
           setStatus('failed');
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-          Alert.alert('Try Again', 'That is not the correct solution.');
-          resetPuzzle();
+          
+          if (move) {
+            injectWebViewMessage(webviewRef, {
+              type: 'highlight_wrong_move',
+              from: move.from,
+              to: move.to
+            });
+          }
+
+          // Give player time to see the wrong move before resetting
+          setTimeout(() => {
+            resetPuzzle();
+          }, 1500);
         }
       } else if (data.type === 'ready') {
         setBoardReady(true);
         // Sync starting FEN for the puzzle
-        webviewRef.current?.injectJavaScript(`window.postMessage(JSON.stringify({type: 'set_fen', fen: '${fen}'}), '*'); true;`);
+        injectWebViewMessage(webviewRef, { type: 'set_fen', fen });
       }
     } catch {}
   };
@@ -152,7 +251,7 @@ export default function PuzzleSolverScreen() {
   useEffect(() => {
     if (boardReady && fen !== lastSyncedFen.current) {
       lastSyncedFen.current = fen;
-      webviewRef.current?.injectJavaScript(`window.postMessage(JSON.stringify({type: 'set_fen', fen: '${fen}'}), '*'); true;`);
+      injectWebViewMessage(webviewRef, { type: 'set_fen', fen });
     }
   }, [fen, boardReady]);
 
@@ -165,7 +264,7 @@ export default function PuzzleSolverScreen() {
     setFen(chess.fen());
     setMoveIndex(0);
     setStatus('playing');
-    webviewRef.current?.injectJavaScript(`window.postMessage(JSON.stringify({type: 'set_fen', fen: '${chess.fen()}'}), '*'); true;`);
+    injectWebViewMessage(webviewRef, { type: 'set_fen', fen: chess.fen() });
   };
 
   if (!puzzle) {
@@ -207,19 +306,24 @@ export default function PuzzleSolverScreen() {
         </View>
       </View>
 
-    return (
       <View style={styles.boardWrapper}>
         <View style={styles.boardContainer}>
           <View style={[styles.board, { borderColor: colors.surfaceLight, backgroundColor: colors.surface }]}>
-            <WebView
-              ref={webviewRef}
-              originWhitelist={['*']}
-              source={{ html: boardHtml }}
-              style={styles.webview}
-              onMessage={handleMessage}
-              scrollEnabled={false}
-              bounces={false}
-            />
+            {isFocused && (
+              <WebView
+                ref={webviewRef}
+                originWhitelist={['*']}
+                source={{ html: boardHtml }}
+                style={styles.webview}
+                onMessage={handleMessage}
+                javaScriptEnabled={true}
+                domStorageEnabled={true}
+                scrollEnabled={false}
+                bounces={false}
+                startInLoadingState={false}
+                androidLayerType="software"
+              />
+            )}
           </View>
         </View>
       </View>
@@ -247,12 +351,24 @@ export default function PuzzleSolverScreen() {
            </View>
         </View>
 
-        <View style={[styles.statusCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-          <Text style={[styles.instruction, { color: colors.text }]}>
-            {status === 'solved' ? 'Tactics Mastered!' : `Find the Win`}
+        <View style={[
+          styles.statusCard, 
+          { 
+            backgroundColor: status === 'failed' ? (isDark ? 'rgba(239, 68, 68, 0.15)' : '#fee2e2') : colors.surface, 
+            borderColor: status === 'failed' ? '#ef4444' : colors.border 
+          }
+        ]}>
+          <Text style={[
+            styles.instruction, 
+            { color: status === 'failed' ? '#ef4444' : colors.text }
+          ]}>
+            {status === 'solved' ? 'Tactics Mastered!' : status === 'failed' ? 'Incorrect Move!' : `Find the Win`}
           </Text>
-          <Text style={[styles.moveCount, { color: colors.textMuted }]}>
-            {status === 'solved' ? 'Puzzle completed perfectly' : `Step ${moveIndex + 1} of ${puzzle.solution.length}`}
+          <Text style={[
+            styles.moveCount, 
+            { color: status === 'failed' ? (isDark ? '#fca5a5' : '#b91c1c') : colors.textMuted }
+          ]}>
+            {status === 'solved' ? 'Puzzle completed perfectly' : status === 'failed' ? 'That is not the correct solution. Try again!' : `Step ${moveIndex + 1} of ${puzzle.solution.length}`}
           </Text>
         </View>
         
@@ -266,7 +382,7 @@ export default function PuzzleSolverScreen() {
             <Text style={[styles.successText, { color: colors.success }]}>BRILLIANT!</Text>
             <TouchableOpacity 
               style={[styles.nextButton, { backgroundColor: colors.primary }]}
-              onPress={() => router.back()}
+              onPress={handleNextChallenge}
             >
               <Text style={styles.nextButtonText}>NEXT CHALLENGE</Text>
             </TouchableOpacity>
@@ -384,7 +500,10 @@ const styles = StyleSheet.create({
     elevation: 20,
   },
   webview: {
-    flex: 1,
+    width: '100%',
+    height: '100%',
+    backgroundColor: 'transparent',
+    opacity: 0.99,
   },
   infoBox: {
     padding: 20,
@@ -465,12 +584,12 @@ const styles = StyleSheet.create({
     top: 0,
     left: 20,
     right: 20,
-    padding: 32,
-    borderRadius: 32,
+    padding: 24,
+    borderRadius: THEME.borderRadius.xl,
     alignItems: 'center',
     shadowOffset: { width: 0, height: 20 },
-    shadowOpacity: 0.15,
-    shadowRadius: 40,
+    shadowOpacity: 0.2,
+    shadowRadius: 30,
     elevation: 20,
     borderWidth: 1.5,
     zIndex: 100,

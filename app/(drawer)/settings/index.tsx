@@ -1,10 +1,10 @@
 import React from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Switch, Dimensions } from 'react-native';
-import { useTheme, BoardTheme, PieceSet } from '../../../src/context/ThemeContext';
+import { useTheme, BoardTheme } from '../../../src/context/ThemeContext';
 import { Header } from '../../../src/components/Header';
 import { THEME } from '../../../src/constants/theme';
 import { Sun, Moon, Laptop, Layout, Palette, Settings } from 'lucide-react-native';
-import Animated, { FadeInUp, FadeInRight } from 'react-native-reanimated';
+import Animated, { FadeInUp } from 'react-native-reanimated';
 
 const { width } = Dimensions.get('window');
 
@@ -16,8 +16,6 @@ export default function SettingsScreen() {
         setMode, 
         boardTheme, 
         setBoardTheme, 
-        pieceSet, 
-        setPieceSet, 
         gameOptions, 
         updateGameOptions 
     } = useTheme();
@@ -30,15 +28,8 @@ export default function SettingsScreen() {
         { id: 'wood', name: 'Wood', light: '#dcb35c', dark: '#926432' },
     ];
 
-    const PIECE_SETS: { id: PieceSet; name: string }[] = [
-        { id: 'wikipedia', name: 'Wikipedia' },
-        { id: 'alpha', name: 'Alpha' },
-        { id: 'neo', name: 'Neo' },
-        { id: 'cburnett', name: 'Cburnett' },
-    ];
-
-    const SettingRow = ({ label, value, onToggle }: { label: string; value: boolean; onToggle: (val: boolean) => void }) => (
-        <View style={[styles.settingRow, { borderBottomColor: colors.border }]}>
+    const SettingRow = ({ label, value, onToggle, isLast = false }: { label: string; value: boolean; onToggle: (val: boolean) => void; isLast?: boolean }) => (
+        <View style={[styles.settingRow, !isLast && { borderBottomColor: colors.border, borderBottomWidth: 1 }]}>
             <Text style={[styles.settingLabel, { color: colors.text }]}>{label}</Text>
             <Switch 
                 value={value} 
@@ -58,11 +49,10 @@ export default function SettingsScreen() {
                 {/* App Theme Section */}
                 <Animated.View entering={FadeInUp.delay(100)} style={styles.section}>
                     <View style={styles.sectionHeader}>
-                        <Layout color={colors.primary} size={18} />
-                        <Text style={[styles.sectionTitle, { color: colors.text }]}>ENVIRONMENT</Text>
+                        <Layout color={colors.primary} size={16} />
+                        <Text style={[styles.sectionTitle, { color: colors.textMuted }]}>ENVIRONMENT</Text>
                     </View>
                     <View style={[styles.themeGrid, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                        <View style={[styles.cardAccent, { backgroundColor: colors.primary }]} />
                         {[
                             { id: 'light', label: 'Light', icon: Sun },
                             { id: 'dark', label: 'Dark', icon: Moon },
@@ -72,12 +62,13 @@ export default function SettingsScreen() {
                                 key={t.id} 
                                 style={[
                                     styles.themeOption, 
-                                    mode === t.id && { backgroundColor: isDark ? colors.background : colors.white, shadowColor: colors.primary }
+                                    mode === t.id && { backgroundColor: isDark ? colors.surfaceLight : colors.surfaceLight }
                                 ]}
                                 onPress={() => setMode(t.id as any)}
                             >
                                 <t.icon color={mode === t.id ? colors.primary : colors.textMuted} size={20} />
-                                <Text style={[styles.themeText, { color: mode === t.id ? colors.text : colors.textMuted }]}>{t.label}</Text>
+                                <Text style={[styles.themeText, { color: mode === t.id ? colors.primary : colors.textMuted }]}>{t.label}</Text>
+                                {mode === t.id && <View style={[styles.activeDot, { backgroundColor: colors.primary }]} />}
                             </TouchableOpacity>
                         ))}
                     </View>
@@ -86,14 +77,17 @@ export default function SettingsScreen() {
                 {/* Board Theme Section */}
                 <Animated.View entering={FadeInUp.delay(200)} style={styles.section}>
                     <View style={styles.sectionHeader}>
-                        <Palette color={colors.primary} size={18} />
-                        <Text style={[styles.sectionTitle, { color: colors.text }]}>BOARD THEME</Text>
+                        <Palette color={colors.primary} size={16} />
+                        <Text style={[styles.sectionTitle, { color: colors.textMuted }]}>BOARD THEME</Text>
                     </View>
                     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.horizontalGrid}>
                         {BOARD_THEMES.map((t) => (
                             <TouchableOpacity 
                                 key={t.id}
-                                style={[styles.boardOption, { borderColor: boardTheme === t.id ? colors.primary : colors.border }]}
+                                style={[
+                                    styles.boardOption, 
+                                    { borderColor: boardTheme === t.id ? colors.primary : colors.border }
+                                ]}
                                 onPress={() => setBoardTheme(t.id)}
                             >
                                 <View style={styles.boardPreview}>
@@ -102,39 +96,22 @@ export default function SettingsScreen() {
                                     <View style={[styles.square, { backgroundColor: t.dark }]} />
                                     <View style={[styles.square, { backgroundColor: t.light }]} />
                                 </View>
-                                <Text style={[styles.optionName, { color: boardTheme === t.id ? colors.text : colors.textMuted }]}>{t.name}</Text>
-                            </TouchableOpacity>
-                        ))}
-                    </ScrollView>
-                </Animated.View>
-
-                {/* Piece Set Section */}
-                <Animated.View entering={FadeInUp.delay(300)} style={styles.section}>
-                    <View style={styles.sectionHeader}>
-                        <Settings color={colors.primary} size={18} />
-                        <Text style={[styles.sectionTitle, { color: colors.text }]}>PIECE DESIGN</Text>
-                    </View>
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.horizontalGrid}>
-                        {PIECE_SETS.map((p) => (
-                            <TouchableOpacity 
-                                key={p.id}
-                                style={[styles.pieceOption, { backgroundColor: colors.surface, borderColor: pieceSet === p.id ? colors.primary : colors.border }]}
-                                onPress={() => setPieceSet(p.id)}
-                            >
-                                <Text style={[styles.optionName, { color: pieceSet === p.id ? colors.text : colors.textMuted }]}>{p.name}</Text>
+                                <Text style={[
+                                    styles.optionName, 
+                                    { color: boardTheme === t.id ? colors.primary : colors.textMuted }
+                                ]}>{t.name}</Text>
                             </TouchableOpacity>
                         ))}
                     </ScrollView>
                 </Animated.View>
 
                 {/* Game Options Section */}
-                <Animated.View entering={FadeInUp.delay(400)} style={styles.section}>
+                <Animated.View entering={FadeInUp.delay(300)} style={styles.section}>
                     <View style={styles.sectionHeader}>
-                        <Settings color={colors.primary} size={18} />
-                        <Text style={[styles.sectionTitle, { color: colors.text }]}>GAMEPLAY OPTIONS</Text>
+                        <Settings color={colors.primary} size={16} />
+                        <Text style={[styles.sectionTitle, { color: colors.textMuted }]}>GAMEPLAY OPTIONS</Text>
                     </View>
                     <View style={[styles.optionsList, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                        <View style={[styles.cardAccent, { backgroundColor: colors.primary }]} />
                         <SettingRow 
                             label="Show Legal Moves" 
                             value={gameOptions.showLegalMoves} 
@@ -159,6 +136,7 @@ export default function SettingsScreen() {
                             label="Always Promote to Queen" 
                             value={gameOptions.alwaysPromoteToQueen} 
                             onToggle={(val) => updateGameOptions({ alwaysPromoteToQueen: val })} 
+                            isLast
                         />
                     </View>
                 </Animated.View>
@@ -185,66 +163,70 @@ const styles = StyleSheet.create({
     sectionHeader: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 12,
+        gap: 8,
         marginBottom: 16,
     },
     sectionTitle: {
-        fontSize: 12,
+        fontSize: 11,
         fontWeight: '900',
-        letterSpacing: 2,
+        letterSpacing: 1.5,
     },
     themeGrid: {
         flexDirection: 'row',
         padding: 6,
-        borderRadius: 16,
+        borderRadius: THEME.borderRadius.lg,
         borderWidth: 1,
     },
-    cardAccent: {
-        position: 'absolute',
-        left: 0,
-        top: 0,
-        bottom: 0,
-        width: 4,
+    themeOption: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 8,
+        paddingVertical: 14,
+        borderRadius: THEME.borderRadius.md,
+        position: 'relative',
     },
     themeText: {
         fontSize: 13,
         fontWeight: '700',
     },
+    activeDot: {
+        position: 'absolute',
+        bottom: 6,
+        width: 4,
+        height: 4,
+        borderRadius: 2,
+    },
     horizontalGrid: {
-        gap: 12,
+        gap: 14,
     },
     boardOption: {
         width: 100,
         alignItems: 'center',
-        gap: 8,
+        gap: 10,
         borderWidth: 2,
-        padding: 8,
-        borderRadius: 16,
+        padding: 10,
+        borderRadius: THEME.borderRadius.lg,
     },
     boardPreview: {
-        width: 60,
-        height: 60,
+        width: 70,
+        height: 70,
         flexDirection: 'row',
         flexWrap: 'wrap',
-        borderRadius: 8,
+        borderRadius: 10,
         overflow: 'hidden',
     },
     square: {
         width: '50%',
         height: '50%',
     },
-    pieceOption: {
-        paddingHorizontal: 20,
-        paddingVertical: 12,
-        borderRadius: 16,
-        borderWidth: 2,
-    },
     optionName: {
         fontSize: 12,
         fontWeight: '800',
     },
     optionsList: {
-        borderRadius: 24,
+        borderRadius: THEME.borderRadius.xl,
         borderWidth: 1,
         overflow: 'hidden',
     },
@@ -253,20 +235,19 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'space-between',
         paddingHorizontal: 20,
-        paddingVertical: 18,
-        borderBottomWidth: 1,
+        paddingVertical: 16,
     },
     settingLabel: {
         fontSize: 14,
-        fontWeight: '700',
+        fontWeight: '600',
     },
     footer: {
-        marginTop: 20,
+        marginTop: 10,
         alignItems: 'center',
     },
     footerText: {
-        fontSize: 11,
-        fontWeight: '600',
+        fontSize: 12,
+        fontWeight: '500',
         textAlign: 'center',
     }
 });

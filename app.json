@@ -24,16 +24,21 @@
         "backgroundColor": "#0A1128"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "usesCleartextTraffic": true
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "extra": {
+      "apiUrl": "http://localhost:8080/api/v1",
       "eas": {
         "projectId": "7a512c44-0ddc-41b1-b74b-344cae986883"
       }
     },
-    "owner": "bck333"
+    "owner": "bck333",
+    "plugins": [
+      "expo-font"
+    ]
   }
 }

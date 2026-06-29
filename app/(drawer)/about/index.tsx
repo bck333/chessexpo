@@ -89,6 +89,15 @@ const styles = StyleSheet.create({
       borderRadius: THEME.borderRadius.lg,
       borderWidth: 1,
   },
+  cardAccent: {
+      position: 'absolute',
+      top: 0,
+      left: 0,
+      bottom: 0,
+      width: 6,
+      borderTopLeftRadius: THEME.borderRadius.lg,
+      borderBottomLeftRadius: THEME.borderRadius.lg,
+  },
   infoRow: {
       flexDirection: 'row',
       alignItems: 'center',

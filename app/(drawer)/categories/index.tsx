@@ -1,55 +1,121 @@
-import React from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Dimensions, StatusBar } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Dimensions, StatusBar, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
-import { ChevronLeft, Zap, Target, Swords, Shield, Search, Flame } from 'lucide-react-native';
+import { Zap, Target, Swords, Shield, Search, Flame, LayoutGrid } from 'lucide-react-native';
 import Animated, { FadeInUp } from 'react-native-reanimated';
 import { COLORS, THEME } from '../../../src/constants/theme';
 import { Header } from '../../../src/components/Header';
 import { useTheme } from '../../../src/context/ThemeContext';
+import { Category, Difficulty, puzzleApi } from '../../../src/api/puzzles';
+import { DifficultySelector } from '../../../src/components/DifficultySelector';
 
 const { width } = Dimensions.get('window');
 
-const CATEGORIES = [
-    { name: 'Pins', icon: Zap, count: 420 },
-    { name: 'Forks', icon: Swords, count: 315 },
-    { name: 'Skewers', icon: Target, count: 128 },
-    { name: 'Deflection', icon: Shield, count: 85 },
-    { name: 'Sacrifices', icon: Flame, count: 210 },
-    { name: 'Endgame', icon: Search, count: 540 },
-];
+const ICON_MAP: Record<string, any> = {
+    'Pin': Zap,
+    'Skewer': Target,
+    'Fork': Swords,
+    'Discovery': Flame,
+    'Deflection': Shield,
+    'Endgame': Search,
+};
 
 export default function CategoriesScreen() {
   const router = useRouter();
   const { colors, isDark } = useTheme();
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [difficulties, setDifficulties] = useState<Difficulty[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedCategory, setSelectedCategory] = useState<Category | null>(null);
+  const [showDifficultySelector, setShowDifficultySelector] = useState(false);
+
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  const fetchData = async () => {
+    try {
+      const [cats, diffs] = await Promise.all([
+        puzzleApi.getCategories(),
+        puzzleApi.getDifficulties()
+      ]);
+      setCategories(cats);
+      setDifficulties(diffs);
+    } catch (error) {
+      console.error('Fetch categories error:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCategoryPress = (cat: Category) => {
+    setSelectedCategory(cat);
+    setShowDifficultySelector(true);
+  };
+
+  const handleDifficultySelect = (diff: Difficulty) => {
+    setShowDifficultySelector(false);
+    if (selectedCategory) {
+      router.push({
+        pathname: '/(drawer)/puzzles',
+        params: { 
+          category_id: selectedCategory.id,
+          category_name: selectedCategory.name,
+          difficulty: diff.name 
+        }
+      });
+    }
+  };
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
       <Header title="Categories" />
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        <Text style={[styles.sectionTitle, { color: colors.accent }]}>SELECT A MOTIF</Text>
-        <View style={styles.grid}>
-            {CATEGORIES.map((cat, index) => (
-                <Animated.View 
-                    key={index} 
-                    entering={FadeInUp.delay(index * 100).duration(500)}
-                    style={styles.cardWrapper}
-                >
-                    <TouchableOpacity style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]} activeOpacity={0.85}>
-                        <View style={[styles.cardAccent, { backgroundColor: colors.primary }]} />
-                        <View style={[styles.iconBox, { backgroundColor: colors.primary + '15' }]}>
-                             <cat.icon color={colors.accent} size={24} />
-                        </View>
-                        <View style={styles.cardContent}>
-                            <Text style={[styles.cardName, { color: colors.text }]}>{cat.name}</Text>
-                            <Text style={[styles.cardCount, { color: colors.textMuted }]}>{cat.count} Tasks</Text>
-                        </View>
-                    </TouchableOpacity>
-                </Animated.View>
-            ))}
+      {loading ? (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={colors.primary} />
         </View>
-      </ScrollView>
+      ) : (
+        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+          <Text style={[styles.sectionTitle, { color: colors.accent }]}>SELECT A MOTIF</Text>
+          <View style={styles.grid}>
+              {categories.map((cat, index) => {
+                  const Icon = ICON_MAP[cat.name] || LayoutGrid;
+                  return (
+                    <Animated.View 
+                        key={cat.id || index} 
+                        entering={FadeInUp.delay(index * 100).duration(500)}
+                        style={styles.cardWrapper}
+                    >
+                        <TouchableOpacity 
+                          style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]} 
+                          activeOpacity={0.85}
+                          onPress={() => handleCategoryPress(cat)}
+                        >
+                            <View style={[styles.cardAccent, { backgroundColor: colors.primary }]} />
+                            <View style={[styles.iconBox, { backgroundColor: colors.primary + '15' }]}>
+                                <Icon color={colors.accent} size={24} />
+                            </View>
+                            <View style={styles.cardContent}>
+                                <Text style={[styles.cardName, { color: colors.text }]}>{cat.name}</Text>
+                                <Text style={[styles.cardCount, { color: colors.textMuted }]}>Training Available</Text>
+                            </View>
+                        </TouchableOpacity>
+                    </Animated.View>
+                  );
+              })}
+          </View>
+        </ScrollView>
+      )}
+
+      <DifficultySelector 
+        visible={showDifficultySelector}
+        onClose={() => setShowDifficultySelector(false)}
+        onSelect={handleDifficultySelect}
+        difficulties={difficulties}
+        categoryName={selectedCategory?.name || ''}
+      />
     </View>
   );
 }
@@ -60,6 +126,11 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     padding: 20,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   sectionTitle: {
     fontSize: 10,
@@ -83,10 +154,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 1,
     overflow: 'hidden',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 10,
-    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 15,
+    elevation: 8,
   },
   cardAccent: {
     position: 'absolute',
